@@ -1,7 +1,10 @@
 pandas
 pyarrow
 duckdb
-python-dotenv
-snownlp
+duckdb-engine
 scikit-learn
-openpyxl
+snownlp
+PyYAML
+google-generativeai
+pytest
+pytest-mock
