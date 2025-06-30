@@ -26,37 +26,121 @@ if _project_root_dir not in sys.path:
     sys.path.insert(0, _project_root_dir)
 # --- END HERMETIC PATH CORRECTION ---
 
-# 現在，由於專案根目錄已經在 sys.path 中，可以直接使用絕對導入
-from apps.stress_report_app.run import run_app
+# 導入標準模組
+import subprocess # 用於執行子程序
+
+# 注意：不再需要從 .run 導入，因為我們將透過 subprocess 執行
+
+def test_app_execution_as_subprocess():
+    """
+    SOP v2.0: 測試 run.py 是否可以作為一個獨立的子程序成功執行，
+    模擬 Colab 或其他外部環境的調用方式。
+    """
+    print("[*] 開始執行 SOP v2.0 整合測試：模擬外部調用 run.py")
+
+    # 步驟一：路徑自我校正已在檔案頂部完成，此處確保 _project_root_dir 可用
+    #         並定位目標腳本 run.py
+    if '_project_root_dir' not in globals():
+        print("錯誤：_project_root_dir 未定義。路徑校正可能失敗。")
+        assert False, "專案根目錄未找到，無法定位 run.py"
+
+    # apps/stress_report_app/run.py 的相對路徑
+    # 我們預期 _test_run.py 和 run.py 在同一個目錄下
+    target_script = os.path.join(
+        os.path.dirname(__file__), 'run.py'
+    )
+
+    if not os.path.exists(target_script):
+        print(f"錯誤：目標腳本 run.py 未在預期路徑找到: {target_script}")
+        assert False, f"目標腳本 run.py 未在預期路徑找到: {target_script}"
+
+    print(f"[*] 目標腳本路徑: {target_script}")
+
+    # 步驟二：定義測試參數
+    start_date = "2024-01-01"
+    end_date = "2024-01-15"
+    # 使用 'test_run' output_format，這在 run.py 中通常意味著不實際寫入檔案，
+    # 或執行簡化的輸出，適合測試。
+    output_format = "test_run"
+
+    print(f"[*] 測試參數：start_date={start_date}, end_date={end_date}, output_format={output_format}")
+
+    # 步驟三：建構 subprocess 命令
+    cmd = [
+        sys.executable,  # 使用目前的 Python 解譯器
+        target_script,
+        '--start-date', start_date,
+        '--end-date', end_date,
+        '--output-format', output_format
+        # 如有需要，可以加入 '--no-charts', '--no-text' 等其他 run.py 支援的參數
+    ]
+
+    print(f"[*] 執行命令: {' '.join(cmd)}")
+
+    # 步驟四：設定環境變數 (例如 API 金鑰)
+    # 非常重要：確保測試環境中設定了必要的 API 金鑰
+    # 這裡我們複製現有環境變數，並確保測試用的 API 金鑰存在
+    env = os.environ.copy()
+    if "API_KEY_FRED" not in env:
+        print("[警告] 環境變數 API_KEY_FRED 未在系統環境中設定。")
+        print("         為本次測試設定一個臨時的測試金鑰 'test_key_12345'。")
+        print("         在實際 CI/CD 或生產環境中，應由該環境正確提供此金鑰。")
+        env["API_KEY_FRED"] = "test_key_12345" # 使用一個假的或測試專用的金鑰
+    else:
+        print(f"[*] 使用現有環境變數中的 API_KEY_FRED: {env['API_KEY_FRED'][:5]}... (已遮蔽)")
 
 
-def main():
-    """執行原子化測試"""
-    test_event_params = {
-        "start_date": "2024-01-01",
-        "end_date": "2024-01-15",
-        "output_format": "test_run" # 標記為測試執行，可能用於 run_app 內部邏輯
-    }
-
-    print(f"[*] 開始執行原子化測試，日期範圍: {test_event_params['start_date']} 至 {test_event_params['end_date']}")
-
+    # 步驟五：執行子程序
     try:
-        # 呼叫核心應用程式邏輯
-        run_app(event_params=test_event_params)
-        print("✅ [SOP-COMPLIANT TEST] Stress report module executed successfully.")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,  # 捕獲 stdout 和 stderr
+            text=True,            # 以文字模式處理輸出 (Python 3.7+)
+            env=env,              # 傳遞修改後的環境變數
+            check=False           # 改為 False，自行檢查 returncode
+        )
     except Exception as e:
-        print(f"❌ [SOP-COMPLIANT TEST] Stress report module execution failed: {e}")
-        # 可以選擇在這裡重新拋出異常，如果測試框架需要捕捉
-        # raise
+        print(f"❌ subprocess.run 執行期間發生未預期錯誤: {e}")
+        assert False, f"subprocess.run 執行失敗: {e}"
+
+    # 步驟六：驗證結果
+    print(f"[*] run.py 子程序執行完畢。返回碼: {result.returncode}")
+
+    if result.stdout:
+        print("--- run.py STDOUT START ---")
+        print(result.stdout)
+        print("--- run.py STDOUT END ---")
+
+    if result.stderr:
+        print("--- run.py STDERR START ---")
+        print(result.stderr)
+        print("--- run.py STDERR END ---")
+
+    assert result.returncode == 0, \
+        f"❌ [SOP v2.0 TEST] 腳本執行失敗！返回碼: {result.returncode}\n" \
+        f"詳細標準輸出 (stdout):\n{result.stdout}\n" \
+        f"詳細標準錯誤 (stderr):\n{result.stderr}"
+
+    print("✅ [SOP v2.0 TEST] 應用程式 run.py 作為子程序成功執行。外部調用模擬測試通過！")
+
 
 if __name__ == "__main__":
-    # 設定 FRED API 金鑰環境變數 (僅為測試目的，實際部署時應由外部設定)
-    # 重要：實際測試時，需要確保 API_KEY_FRED 環境變數已設定
-    # 此處僅為範例，不應將實際金鑰硬編碼於此
-    if "API_KEY_FRED" not in os.environ:
-        print("[WARNING] 環境變數 API_KEY_FRED 未設定。測試可能因缺少 API 金鑰而失敗。")
-        print("          請使用以下方式執行測試: API_KEY_FRED=\"YOUR_KEY_HERE\" python apps/x21_generate_dealer_stress_report/_test_run.py")
-        # 或者，如果有一個測試用的假金鑰或模擬器，可以在這裡設定
-        # os.environ["API_KEY_FRED"] = "TEST_KEY_ONLY_FOR_CI" # 僅作示例
+    # 確保路徑校正已執行 (通常在檔案頂部)
+    if '_project_root_dir' not in globals() or not _project_root_dir:
+        print("緊急錯誤：專案根目錄未能成功設定。請檢查檔案頂部的路徑校正代碼。")
+        sys.exit(1) # 嚴重錯誤，終止執行
 
-    main()
+    print(f"[*] _test_run.py: 專案根目錄已設定為: {_project_root_dir}")
+    print(f"[*] _test_run.py: 目前 Python sys.path[0]: {sys.path[0]}")
+
+    # 執行新的測試函式
+    try:
+        test_app_execution_as_subprocess()
+    except AssertionError as ae:
+        print(f"❌ 測試斷言失敗: {ae}")
+        sys.exit(1) # 測試失敗，以非零狀態碼退出
+    except Exception as e:
+        print(f"❌ 測試執行期間發生未預期錯誤: {e}")
+        sys.exit(1) # 測試失敗，以非零狀態碼退出
+
+    print("🎉 所有測試執行完畢。")

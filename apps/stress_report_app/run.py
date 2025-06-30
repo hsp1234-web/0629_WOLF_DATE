@@ -43,7 +43,7 @@ from apps.stress_report_app.data_fetcher import (
     get_vix_index, fetch_nyfed_data
 )
 from apps.stress_report_app.calculator import (
-    calculate_derived_metrics, calculate_stress_index, calculate_macd_momentum
+    calculate_derived_indicators, calculate_stress_index, calculate_macd_momentum
 )
 from apps.stress_report_app.visualizer import create_stress_dashboard_plotly
 from apps.stress_report_app.reporter import generate_text_analysis, compile_html_report
@@ -134,7 +134,7 @@ def main(args):
 
     # --- 階段二：指標計算 ---
     logger.info("##### 階段：指標計算 #####")
-    calculated_df = calculate_derived_metrics(merged_df.copy())
+    calculated_df = calculate_derived_indicators(merged_df.copy())
     calculated_df = calculate_stress_index(calculated_df, config)
     final_df = calculate_macd_momentum(calculated_df, config)
     logger.info(f"指標計算完成。最終 DataFrame 維度: {final_df.shape}")
@@ -143,7 +143,8 @@ def main(args):
     plotly_fig = None
     if not args.no_charts:
         logger.info("##### 階段：圖表生成 (Plotly) #####")
-        plotly_fig = create_stress_dashboard_plotly(final_df, config)
+        # 傳遞 date_range 給 create_stress_dashboard_plotly
+        plotly_fig = create_stress_dashboard_plotly(final_df, config, date_range=(start_date_dt, end_date_dt))
         if plotly_fig:
             logger.info("Plotly 組合式儀表板 Figure 物件已生成。")
         else:
