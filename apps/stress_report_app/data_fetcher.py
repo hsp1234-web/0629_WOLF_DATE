@@ -338,13 +338,22 @@ def get_vix_index(
     return None
 
 def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.Logger] = None) -> Optional[pd.Series]:
-    # TODO: 遷移或重用上次的正確邏輯 (參考 Cell 6)
-    # 確保從 config['data_fetching']['ny_fed_positions_urls'] 和 config['data_fetching']['sbp_cols_config'] 獲取配置
     current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
-    ny_fed_positions_urls = config.get('data_fetching', {}).get('ny_fed_positions_urls', [])
-    sbp_cols_config = config.get('data_fetching', {}).get('sbp_cols_config', {})
 
-    current_logger.info(f"開始從 {len(ny_fed_positions_urls)} 個 URL 獲取 NY Fed 持有量數據 (使用 '一級交易pro.py' Cell 6 邏輯)。")
+    # 從 AppConfig 結構化物件獲取配置，或者如果傳入的是字典則按舊方式獲取
+    if hasattr(config, 'data_fetching') and hasattr(config.data_fetching, 'nyfed_data_urls'):
+        # 假設 config 是 Pydantic AppConfig 模型
+        ny_fed_positions_urls = config.data_fetching.nyfed_data_urls
+        sbp_cols_config = config.data_fetching.sbp_cols_config
+        current_logger.debug("從 AppConfig Pydantic 模型獲取 NY Fed 設定。")
+    else:
+        # 保持對舊式字典配置的兼容性
+        ny_fed_positions_urls = config.get('data_fetching', {}).get('nyfed_data_urls', [])
+        sbp_cols_config = config.get('data_fetching', {}).get('sbp_cols_config', {})
+        current_logger.debug("從字典型態的 config 獲取 NY Fed 設定。")
+
+
+    current_logger.info(f"開始從 {len(ny_fed_positions_urls)} 個 URL 獲取 NY Fed 持有量數據。")
     all_positions_data = []
     processed_files_count = 0
     failed_files_info = []
@@ -358,13 +367,17 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
         current_logger.warning("NY Fed 持有量數據 URL 列表為空。返回空 Series。")
         return pd.Series(dtype='float64', name='Total_Gross_Positions_Millions')
 
-    for i, url in enumerate(ny_fed_positions_urls):
-        file_source_name = url.split('/')[-3] if len(url.split('/')) > 2 else f"File_{i+1}"
-        current_logger.info(f"處理文件 {i + 1}/{len(ny_fed_positions_urls)} ({file_source_name}): {url}")
+    for i, url_obj in enumerate(ny_fed_positions_urls): # url_obj is a HttpUrl object
+        # 將 HttpUrl 物件轉換為字串以進行字串操作
+        url_str = str(url_obj)
+        file_source_name = url_str.split('/')[-3] if len(url_str.split('/')) > 2 else f"File_{i+1}"
+        current_logger.info(f"處理文件 {i + 1}/{len(ny_fed_positions_urls)} ({file_source_name}): {url_str}")
 
         try:
             current_logger.debug(f"文件 {file_source_name}: 正在下載...")
-            response_excel = session.get(url, timeout=120)
+            # requests.get 需要字串 URL
+            response_excel = session.get(url_str, timeout=120) # 確保使用 url_str
+            # response_excel = session.get(url, timeout=120) # 移除重複且錯誤的行
             response_excel.raise_for_status()
             excel_content = io.BytesIO(response_excel.content)
             current_logger.info(f"文件 {file_source_name}: 下載成功。")
@@ -490,25 +503,25 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
                      failed_files_info.append({'file': file_source_name, 'url': url, 'reason': '加總後無有效數據'})
             except Exception as e_sum:
                 current_logger.error(f"文件 {file_source_name}: 加總欄位時出錯: {e_sum}。跳過。", exc_info=True)
-                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'加總失敗: {e_sum}'})
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'加總失敗: {e_sum}'})
                 continue
         except requests.exceptions.RequestException as e_req:
             current_logger.error(f"文件 {file_source_name}: 下載失敗: {e_req}。跳過。", exc_info=True)
-            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'下載失敗: {e_req}'})
+            failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'下載失敗: {e_req}'})
         except pd.errors.EmptyDataError:
             current_logger.warning(f"文件 {file_source_name}: Excel 文件為空或無數據可讀。跳過。")
-            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': 'Excel文件為空'})
+            failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': 'Excel文件為空'})
         except ValueError as e_val:
             current_logger.warning(f"文件 {file_source_name}: 處理時發生數值或格式錯誤: {e_val}。跳過。")
-            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'數值/格式錯誤: {e_val}'})
+            failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'數值/格式錯誤: {e_val}'})
         except Exception as e_file:
             current_logger.error(f"文件 {file_source_name}: 處理時發生未預期錯誤: {e_file}。跳過。", exc_info=True)
-            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'未知處理錯誤: {e_file}'})
+            failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'未知處理錯誤: {str(e_file)}'}) # 使用 url_str 並將 e_file 轉為字串
 
     current_logger.info(f"NY Fed 文件處理循環結束。成功處理 {processed_files_count}/{len(ny_fed_positions_urls)} 個文件。")
     if failed_files_info:
         current_logger.warning(f"以下 NY Fed 文件處理失敗或被跳過:")
-        for item in failed_files_info:
+        for item in failed_files_info: # item['url'] 這裡已經是 url_str
             current_logger.warning(f"  - 文件: {item['file']}, URL: {item['url']}, 原因: {item['reason']}")
 
     if not all_positions_data:
@@ -543,3 +556,141 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
 #     # ...
 #     # 呼叫並測試每個函式
 #     # ...
+
+# --- 主函式包裝器 (SOP v3.0 要求) ---
+def fetch_all_data(
+    start_date_dt: datetime,
+    end_date_dt: datetime,
+    app_config: 'AppConfig', # 使用引號避免循環導入，實際應為 schemas.AppConfig
+    fred_api_key: str, # 從環境變數傳入
+    logger_instance: Optional[logging.Logger] = None
+) -> 'FetchedData': # 使用引號避免循環導入，實際應為 schemas.FetchedData
+    """
+    數據獲取階段的主函式。
+    依照 SOP v3.0，此函式將協調所有數據獲取子函式，
+    並返回一個符合 FetchedData 合約的 Pydantic 模型實例。
+
+    Args:
+        start_date_dt (datetime): 數據開始日期。
+        end_date_dt (datetime): 數據結束日期。
+        app_config (AppConfig): 已驗證的應用程式設定物件。
+        fred_api_key (str): FRED API 金鑰。
+        logger_instance (Optional[logging.Logger]): 日誌記錄器實例。
+
+    Returns:
+        FetchedData: 包含合併數據框和設定物件的 Pydantic 模型。
+    """
+    current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
+    current_logger.info("進入 fetch_all_data 主函式...")
+
+    # 從 app_config 中提取 data_fetching 部分的設定 (Pydantic 模型)
+    # 這裡假設 app_config 是已經被 app.py 驗證過的 schemas.AppConfig 實例
+    data_fetching_specific_config_model = app_config.data_fetching
+    # 將 Pydantic 模型轉換為字典以兼容現有函式簽名
+    data_fetching_specific_config_dict = data_fetching_specific_config_model.model_dump()
+
+
+    # --- 執行各個數據獲取子函式 ---
+    current_logger.info("--- [子任務] 開始獲取 FRED 基礎數據 ---")
+    fred_base_df = get_fred_base_data(
+        fred_api_key, start_date_dt, end_date_dt, data_fetching_specific_config_dict, current_logger
+    )
+    current_logger.info(f"--- [子任務] FRED 基礎數據獲取完成。DataFrame 維度: {fred_base_df.shape} ---")
+
+    current_logger.info("--- [子任務] 開始獲取 Yahoo Finance 其他數據 ---")
+    yahoo_other_df = get_yahoo_other_data(
+        start_date_dt, end_date_dt, data_fetching_specific_config_dict, current_logger
+    )
+    current_logger.info(f"--- [子任務] Yahoo Finance 其他數據獲取完成。DataFrame 維度: {yahoo_other_df.shape} ---")
+
+    current_logger.info("--- [子任務] 開始獲取 MOVE 指數 ---")
+    move_series = get_move_index(
+        fred_api_key, start_date_dt, end_date_dt, data_fetching_specific_config_dict, current_logger
+    )
+    current_logger.info(f"--- [子任務] MOVE 指數獲取完成。Series 長度: {len(move_series) if move_series is not None else 'N/A'} ---")
+
+    current_logger.info("--- [子任務] 開始獲取 VIX 指數 ---")
+    vix_series = get_vix_index(
+        fred_api_key, start_date_dt, end_date_dt, data_fetching_specific_config_dict, current_logger
+    )
+    current_logger.info(f"--- [子任務] VIX 指數獲取完成。Series 長度: {len(vix_series) if vix_series is not None else 'N/A'} ---")
+
+    current_logger.info("--- [子任務] 開始獲取 NY Fed 持倉數據 ---")
+    # fetch_nyfed_data 內部已調整為可接收 Pydantic config 或 dict
+    # 為了更明確，這裡傳遞 app_config (它會被內部判斷為 Pydantic 物件)
+    nyfed_series = fetch_nyfed_data(app_config, current_logger)
+    current_logger.info(f"--- [子任務] NY Fed 持倉數據獲取完成。Series 長度: {len(nyfed_series) if nyfed_series is not None else 'N/A'} ---")
+
+    # --- 合併所有數據源 ---
+    current_logger.info("--- [合併] 開始合併所有獲取的數據源 ---")
+    # 使用業務日作為基礎索引 (Business day frequency)
+    base_idx = pd.date_range(start=start_date_dt, end=end_date_dt, freq='B')
+    merged_df = pd.DataFrame(index=base_idx)
+
+    if fred_base_df is not None and not fred_base_df.empty:
+        merged_df = merged_df.join(fred_base_df, how='left')
+    if yahoo_other_df is not None and not yahoo_other_df.empty:
+        merged_df = merged_df.join(yahoo_other_df, how='left')
+
+    # MOVE 和 VIX 需要特別處理，因為它們是 Series，且可能有不同的欄位名
+    if move_series is not None and not move_series.empty:
+        # 從設定檔中找到 MOVE 指數在 yahoo_tickers_map 中定義的欄位名
+        move_col_name = "Volatility_Index" # 預設
+        # data_fetching_specific_config_model is Pydantic model
+        for name, symbol in data_fetching_specific_config_model.yahoo_tickers_map.model_dump().items():
+            if symbol.upper() == '^MOVE': # 假設 ^MOVE 是其 Ticker
+                move_col_name = name
+                break
+        merged_df[move_col_name] = move_series.reindex(base_idx, method='ffill')
+    else:
+        # 確保欄位存在，即使數據獲取失敗
+        move_col_name = "Volatility_Index"
+        merged_df[move_col_name] = np.nan
+
+    if vix_series is not None and not vix_series.empty:
+        vix_col_name = "VIX" # 預設
+        # VIX 可能來自 FRED (VIX_FRED) 或 Yahoo (VIX)
+        # 優先使用 FRED map 中的名字，如果 VIX_FRED 存在
+        if hasattr(data_fetching_specific_config_model.fred_series_map, 'VIX_FRED') and \
+           data_fetching_specific_config_model.fred_series_map.VIX_FRED:
+            vix_col_name = "VIX_FRED" # 或者更通用的 "VIX"
+        else: # 否則檢查 Yahoo map
+            for name, symbol in data_fetching_specific_config_model.yahoo_tickers_map.model_dump().items():
+                if symbol.upper() == '^VIX':
+                    vix_col_name = name
+                    break
+        merged_df[vix_col_name] = vix_series.reindex(base_idx, method='ffill')
+    else:
+        vix_col_name = "VIX"
+        merged_df[vix_col_name] = np.nan
+
+    if nyfed_series is not None and not nyfed_series.empty:
+        nyfed_df_temp = nyfed_series.to_frame(name='Total_Gross_Positions_Millions') # NY Fed Series 固定名稱
+        merged_df = merged_df.join(nyfed_df_temp, how='left')
+        # NY Fed 數據通常是週頻或不規則，需要向前填充以匹配業務日
+        if 'Total_Gross_Positions_Millions' in merged_df.columns:
+            merged_df['Total_Gross_Positions_Millions'].ffill(inplace=True)
+    else:
+        merged_df['Total_Gross_Positions_Millions'] = np.nan
+
+    current_logger.info(f"--- [合併] 數據合併完成。最終 merged_df 維度: {merged_df.shape} ---")
+
+    if merged_df.isna().all().all():
+        current_logger.critical("CRITICAL: 所有數據源獲取失敗或合併後數據全為 NaN，無法繼續。")
+        # 即使是 critical，也應該返回符合合約的空數據，讓 Pydantic 驗證，或由調用方處理
+        # 這裡可以選擇拋出異常，或者返回一個空的但符合結構的 FetchedData
+        # 為了符合 SOP，我們返回一個結構正確但內容可能無效的物件，讓後續階段處理或報錯
+
+    # 導入 FetchedData 模型 (在函式內部導入以避免頂層的循環依賴問題，如果 schemas.py 也導入此檔案)
+    # 實際上，如果 AppConfig 和 FetchedData 都在 schemas.py 中，這裡的類型提示 AppConfig 和 FetchedData
+    # 應該直接從 .schemas 導入，或者在檔案頂部使用 from typing import TYPE_CHECKING
+    from .schemas import FetchedData
+
+    # 封裝到 FetchedData Pydantic 模型
+    fetched_data_output = FetchedData(
+        merged_df=merged_df,
+        config=app_config # 傳遞完整的 AppConfig 實例
+    )
+
+    current_logger.info("fetch_all_data 主函式執行完畢。")
+    return fetched_data_output

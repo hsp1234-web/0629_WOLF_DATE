@@ -11,6 +11,8 @@
 
 import pandas as pd
 import numpy as np
+from typing import Optional # 添加導入
+import logging # 添加導入
 
 # 全局性的註解，說明此模組的用途和主要提供的函式
 # 後續將根據 `一級交易pro.py` 的 Cell 8 內容填充具體函式實現
@@ -274,3 +276,59 @@ def calculate_macd_momentum(df_with_stress_index: pd.DataFrame, config: dict) ->
 # 範例使用 (僅為示意，實際由 run.py 調用)
 if __name__ == '__main__':
     pass # 正式執行時此區塊不執行任何操作
+
+# --- 主函式包裝器 (SOP v3.0 要求) ---
+def calculate_all_indicators(
+    data: 'FetchedData', # 使用引號避免循環導入，實際應為 schemas.FetchedData
+    logger_instance: Optional[logging.Logger] = None
+) -> 'CalculatedData': # 使用引號避免循環導入，實際應為 schemas.CalculatedData
+    """
+    指標計算階段的主函式。
+    依照 SOP v3.0，此函式接收 FetchedData，執行所有指標計算，
+    並返回一個符合 CalculatedData 合約的 Pydantic 模型實例。
+
+    Args:
+        data (FetchedData): 包含 merged_df 和 AppConfig 的 Pydantic 模型實例。
+        logger_instance (Optional[logging.Logger]): 日誌記錄器實例。
+
+    Returns:
+        CalculatedData: 包含 final_df 和 AppConfig 的 Pydantic 模型實例。
+    """
+    current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
+    current_logger.info("進入 calculate_all_indicators 主函式...")
+
+    # 從傳入的 FetchedData 物件中獲取 merged_df 和 config
+    # merged_df 已經是 DataFrame，可以直接使用
+    # app_config 已經是 Pydantic AppConfig 實例
+    merged_df_input = data.merged_df.copy() # 複製以避免修改原始數據
+    app_config = data.config
+
+    # 提取計算所需的參數部分 (Pydantic 模型)
+    calculation_specific_config_model = app_config.calculation_params
+    # 將 Pydantic 模型轉換為字典以兼容現有函式簽名
+    calculation_specific_config_dict = calculation_specific_config_model.model_dump()
+
+    # --- 執行各個指標計算子函式 ---
+    current_logger.info("--- [子任務] 開始計算衍生指標 ---")
+    df_with_derived = calculate_derived_indicators(merged_df_input)
+    current_logger.info(f"--- [子任務] 衍生指標計算完成。DataFrame 維度: {df_with_derived.shape} ---")
+
+    current_logger.info("--- [子任務] 開始計算壓力指數 ---")
+    df_with_stress = calculate_stress_index(df_with_derived, calculation_specific_config_dict)
+    current_logger.info(f"--- [子任務] 壓力指數計算完成。DataFrame 維度: {df_with_stress.shape} ---")
+
+    current_logger.info("--- [子任務] 開始計算 MACD 動能指標 ---")
+    final_df_output = calculate_macd_momentum(df_with_stress, calculation_specific_config_dict)
+    current_logger.info(f"--- [子任務] MACD 動能指標計算完成。最終 DataFrame 維度: {final_df_output.shape} ---")
+
+    # 導入 CalculatedData 模型
+    from .schemas import CalculatedData
+
+    # 封裝到 CalculatedData Pydantic 模型
+    calculated_data_output = CalculatedData(
+        final_df=final_df_output,
+        config=app_config # 繼續傳遞完整的 AppConfig 實例
+    )
+
+    current_logger.info("calculate_all_indicators 主函式執行完畢。")
+    return calculated_data_output

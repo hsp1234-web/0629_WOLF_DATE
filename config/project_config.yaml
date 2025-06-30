@@ -12,4 +12,93 @@ data_fetching:
     Volatility_Index: '^MOVE'
     VIX: '^VIX'
     TLT_Close: 'TLT'
-  nyfed_data_urls: [] # 新增此鍵，即使為空，以避免 KeyError
+  nyfed_data_urls: [
+    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2023.xlsx",
+    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2022.xlsx",
+    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2021.xlsx",
+    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2020.xlsx"
+  ] # 更新為範例 URL，實際應為有效的 URL 列表
+  # sbp_cols_config 是 NY Fed 數據解析需要的，雖然 fetch_nyfed_data 內部有預期，但 project_config.yaml 裡最好也定義
+  sbp_cols_config: {
+    "SBP": [ # Securities Held Outright by Primary Dealers
+        "US Treasury Coupons",
+        "Federal Agency and GSE MBS",
+        "Agency Commercial Mortgage-Backed Securities",
+        "Federal Agency and GSE Debt",
+        "Corporate Bonds",
+        "Municipal Securities",
+        "Equities",
+        "Other"
+    ],
+    "SBN": [ # SOMA Holdings (System Open Market Account) - Net
+        # fetch_nyfed_data 中的邏輯是 if 'SBN' in url.upper(): target_cols_list_for_sum = [c for c in data_positions_wide.columns if isinstance(c, str) and c.startswith('PDPOSGSC-')]
+    ]
+  }
+
+calculation_params:
+  stress_index_weights:
+    sofr_dev: 0.20
+    spread_inv: 0.20
+    gross_pos: 0.15
+    move: 0.20
+    vix: 0.15
+    pos_res_ratio: 0.10 # 權重總和為 1.0
+  macd_fast_period: 12
+  macd_slow_period: 26
+  macd_signal_period: 9
+  rolling_window_days: 252
+  smoothing_window_stress_index: 5
+  threshold_ratio_color: 90.0 # 注意：schemas.py 中為 float
+  enable_macd_momentum_plot: true # 根據 schemas.py 預設為 False，但測試時可以打開
+  weights: # 重複了 stress_index_weights，根據 schemas.py，這裡應該是 weights
+    sofr_dev: 0.20
+    spread_inv: 0.20
+    gross_pos: 0.15
+    move: 0.20
+    vix: 0.15
+    pos_res_ratio: 0.10
+  macd_params:
+    fast: 12
+    slow: 26
+    signal: 9
+  macd_colors:
+    blue: "#6495ED"
+    green: "#3CB371"
+    red: "#B22222"
+
+report_settings:
+  report_title: "交易商每日壓力指數監控報告"
+
+gemini_config: # 可選，如果沒有 API Key 或不想用，可以註解掉或移除
+  model_name: "gemini-1.5-flash" # 或 gemini-pro
+  temperature: 0.6
+  # safety_settings: [] # 根據需要填寫
+  # top_p: 0.9
+  # top_k: 40
+
+visualization_params:
+  plots_config:
+    SOFR: true
+    Spread: true
+    MOVE: true
+    VIX: true
+    DealerPos: false
+    Reserves: false
+    StressIndex: true
+    Ratio: true # 打開 Pos/Res Ratio 圖表以供測試
+    MACD: true # 確保與 calculation_params.enable_macd_momentum_plot 一致
+    ETF: false
+  chart_params:
+    dashboard_main_name_html: "綜合市場壓力儀表板"
+    main_plot_titles:
+      SOFR: "SOFR 利率 (%)"
+      Spread: "利差 (10年期-2年期, 基點)" # 更正為基點
+      MOVE: "MOVE 波動率指數"
+      VIX: "VIX 波動率指數"
+      StressIndex: "交易商壓力指數 (0-100)"
+      Ratio: "主要交易商持倉/準備金比率"
+      MACD: "壓力指數 MACD 動能"
+  gauge_thresholds:
+    high: 80
+    medium: 60
+    low: 30

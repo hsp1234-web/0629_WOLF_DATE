@@ -17,8 +17,13 @@ from plotly.subplots import make_subplots
 import io
 import base64
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple # Tuple 已在此，Optional 也在此
 from datetime import datetime # 修正 NameError: name 'datetime' is not defined
+
+# 導入 schemas 中的類型給類型提示，使用 TYPE_CHECKING 防止循環導入
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .schemas import CalculatedData, VisualizationData, AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -324,3 +329,85 @@ if __name__ == '__main__':
             # print(div_output) # 打印 div
     else:
         logger.error("測試儀表板 Figure 未能生成。")
+
+# --- 主函式包裝器 (SOP v3.0 要求) ---
+def create_all_visuals(
+    data: 'CalculatedData', # 使用引號避免循環導入，實際應為 schemas.CalculatedData
+    logger_instance: Optional[logging.Logger] = None
+) -> 'VisualizationData': # 使用引號避免循環導入，實際應為 schemas.VisualizationData
+    """
+    視覺化階段的主函式。
+    依照 SOP v3.0，此函式接收 CalculatedData，生成 Plotly 圖表，
+    並返回一個符合 VisualizationData 合約的 Pydantic 模型實例。
+
+    Args:
+        data (CalculatedData): 包含 final_df 和 AppConfig 的 Pydantic 模型實例。
+        logger_instance (Optional[logging.Logger]): 日誌記錄器實例。
+
+    Returns:
+        VisualizationData: 包含 plotly_fig, final_df 和 AppConfig 的 Pydantic 模型實例。
+    """
+    current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
+    current_logger.info("進入 create_all_visuals 主函式...")
+
+    final_df_input = data.final_df
+    app_config = data.config # Pydantic AppConfig 實例
+
+    # 從 AppConfig 提取視覺化參數 (Pydantic 模型)
+    visualization_specific_config_model = app_config.visualization_params
+    # 將 Pydantic 模型轉換為字典以兼容現有函式簽名
+    visualization_specific_config_dict = visualization_specific_config_model.model_dump()
+
+    # 獲取繪圖所需的日期範圍，這裡假設 final_df 的索引是有效的日期時間索引
+    # 如果 app.py 中有解析 start_date, end_date，理論上應該從 app_config 中獲取
+    # 或從 final_df 的索引推斷。為簡化，先從 final_df 推斷。
+    # 實際應用中，日期範圍應由 app.py 傳遞或包含在 AppConfig 中。
+    # 根據 SOP，date_range 是傳給 create_stress_dashboard_plotly 的，
+    # 但 create_all_visuals 的輸入是 CalculatedData，不直接包含原始 start/end date。
+    # 我們需要確保 AppConfig 包含這些信息，或者 final_df 的時間範圍是正確的。
+    # 假設 AppConfig 包含 start_date 和 end_date 字符串 (需在 schemas.py 中添加)
+    # 或從 final_df_input.index 推斷
+
+    # 為了符合 create_stress_dashboard_plotly 的簽名，我們需要 start_date_dt, end_date_dt
+    # 這些應該在 app_config 中，或者從 final_df_input 的索引中獲取
+    # 暫時從 final_df_input 的索引獲取，但這不是最穩健的做法
+    if not final_df_input.empty and isinstance(final_df_input.index, pd.DatetimeIndex):
+        plot_start_date = final_df_input.index.min()
+        plot_end_date = final_df_input.index.max()
+        current_logger.info(f"從 final_df 推斷的繪圖日期範圍: {plot_start_date.strftime('%Y-%m-%d')} 至 {plot_end_date.strftime('%Y-%m-%d')}")
+    else:
+        # 如果無法推斷，可能需要一個預設或報錯
+        current_logger.warning("無法從 final_df 推斷繪圖日期範圍，圖表可能不準確。")
+        # 使用一個預設的較大範圍或依賴 create_stress_dashboard_plotly 內部的處理
+        # 這裡假設，如果 final_df 為空，create_stress_dashboard_plotly 會返回 None
+        plot_start_date = datetime.now() - pd.Timedelta(days=365) # 預設過去一年
+        plot_end_date = datetime.now()
+
+    # --- 呼叫核心繪圖函式 ---
+    plotly_figure_output: Optional[go.Figure] = None
+    try:
+        plotly_figure_output = create_stress_dashboard_plotly(
+            final_df_input,
+            visualization_specific_config_dict, # 傳遞字典
+            date_range=(plot_start_date, plot_end_date)
+        )
+        if plotly_figure_output:
+            current_logger.info("核心繪圖函式 create_stress_dashboard_plotly 執行成功，已生成 Plotly Figure。")
+        else:
+            current_logger.warning("核心繪圖函式 create_stress_dashboard_plotly 返回 None，未能生成圖表。")
+    except Exception as e:
+        current_logger.error(f"執行 create_stress_dashboard_plotly 時發生錯誤: {e}", exc_info=True)
+        plotly_figure_output = None # 確保出錯時返回 None
+
+    # 導入 VisualizationData 模型
+    from .schemas import VisualizationData
+
+    # 封裝到 VisualizationData Pydantic 模型
+    visualization_data_output = VisualizationData(
+        plotly_fig=plotly_figure_output,
+        final_df=final_df_input, # 將數據繼續往下傳遞
+        config=app_config      # 繼續傳遞完整的 AppConfig 實例
+    )
+
+    current_logger.info("create_all_visuals 主函式執行完畢。")
+    return visualization_data_output
