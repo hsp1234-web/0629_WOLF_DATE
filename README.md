@@ -148,45 +148,42 @@ Financial_Forensics_Engine/
 
 在特定的沙箱環境（如 Google Colab 或類似的雲端 Notebook）中執行時，可能會遇到檔案系統操作限制。如果遇到此類問題，可能需要將部署和執行步驟進一步分解。
 
-## 標準化模組測試
+## 架構升級：應用程式容器化 (SOP v3.0) 與微服務理念
+
+為了提升專案的穩健性、可維護性和可擴展性，本專案正逐步導入「**應用程式容器化 (App-in-a-Box)**」的開發範式，此範式遵循內部開發與測試流程 **SOP v3.0** 標準。其核心思想是將各個獨立的功能模組（微應用/Micro-App）視為標準化的「貨櫃」，重點關注其**外部接口的標準化**和**內部數據流的可靠性與可驗證性**。
+
+這一轉變旨在將專案從原有的單體式、腳本驅動的結構，逐步演進為一個更接近**微服務理念**的分散式數據處理架構。每個微應用都力求成為一個高內聚、低耦合、可獨立部署和測試的單元。
+
+### `stress_report_app`：首個 SOP v3.0 試點應用
+
+位於 `apps/stress_report_app/` 的「壓力指數報告應用程式」是本專案中第一個按照 SOP v3.0 新範式進行重構的試點微應用。它集中體現了以下核心原則：
+
+*   **數據合約優先**：引入 Pydantic 模型 (`apps/stress_report_app/schemas.py`) 來嚴格定義應用內部各階段的數據輸入與輸出結構，確保數據的「形狀」在流動過程中得到驗證。
+*   **標準化執行入口**：擁有單一的執行入口 `apps/stress_report_app/app.py`，負責解析命令列參數和協調內部處理流水線。
+*   **獨立測試探針**：配備 `apps/stress_report_app/_test_harness.py` 腳本，用於在模擬真實環境下對此微應用容器進行端到端的驗收測試。
+
+透過 `stress_report_app` 的實踐，我們旨在為專案的其他模組提供一個可參考的現代化改造藍圖。
+
+**詳細資訊**：關於 `stress_report_app` 的具體架構、數據流、執行方式及依賴，請參閱其專屬的說明文件：[`apps/stress_report_app/README.md`](./apps/stress_report_app/README.md)。
+
+## 標準化模組測試 (舊版說明保留參考)
 
 為了確保核心模組的穩定性和功能正確性，我們為部分關鍵應用程式提供了標準化的原子化測試腳本。
 
-### 壓力指數報告模組 (apps/stress_report_app)
+**（注意：以下針對 `stress_report_app` 的舊版測試說明已過時，新的驗收標準請參考其專屬 README 中的 `_test_harness.py` 執行指南。）**
 
-此模組用於生成一級交易商壓力指數分析報告。其標準化測試腳本位於 `apps/stress_report_app/_test_run.py`。
+### 壓力指數報告模組 (apps/stress_report_app) - 舊版測試說明
+
+此模組用於生成一級交易商壓力指數分析報告。其標準化測試腳本位於 `apps/stress_report_app/_test_run.py`。(此腳本現已更新為 `_test_harness.py`)
 
 **執行標準化驗證指令與驗收標準：**
 
 此專案的核心驗收標準之一是確保壓力指數報告模組 (`stress_report_app`) 能夠在其預期環境中成功執行其核心流程。為此，請在**專案根目錄** (`Financial_Forensics_Engine/`) 下執行以下標準化驗證指令：
 
 ```bash
+# 舊版測試指令，新版請參考 apps/stress_report_app/README.md
 API_KEY_FRED="DUMMY_KEY_FOR_VALIDATION" python apps/stress_report_app/_test_run.py
 ```
-
-**重要說明**：
-*   上述指令使用了一個名為 `"DUMMY_KEY_FOR_VALIDATION"` 的虛擬 API 金鑰。這是特意設計的，目的是在不依賴真實外部 API 金鑰的情況下，驗證應用程式的內部邏輯、模組加載、路徑解析以及基本執行流程能否順利完成。
-*   由於使用的是虛擬金鑰，預期在執行過程中，應用程式內部會產生關於數據獲取失敗的日誌或警告 (例如，無法從 FRED 或 Yahoo Finance 獲取數據)。這屬於正常現象，並不表示測試失敗。
-*   測試腳本 `_test_run.py` 內部已包含動態路徑校正邏輯 (通過查找 `.git` 目錄確定專案根目錄)，能確保只要專案結構完整，模組導入路徑都會被正確解析。
-
-**預期輸出與驗收成功標準：**
-
-標準化驗證成功的標準有兩點：
-1.  **指令成功退出**：上述 bash 指令的最終返回碼 (exit code) 必須為 `0`。
-2.  **包含成功標記**：指令的標準輸出 (stdout) 中必須包含以下明確的成功訊息（由 `_test_run.py` 打印）：
-    ```
-    ✅ [SOP-COMPLIANT TEST] Stress report module executed successfully.
-    ```
-
-同時，您可能會在輸出中看到類似以下的日誌訊息，這些是預期之內的：
-```
-[*] 開始執行原子化測試，日期範圍: 2024-01-01 至 2024-01-15
-... (大量關於數據獲取失敗的日誌訊息，例如 "FRED 序列 'SOFR' 獲取時發生錯誤: Bad Request...") ...
-✅ [SOP-COMPLIANT TEST] Stress report module executed successfully.
-... (應用程式本身的日誌，如 "===== 開始執行 '21_generate_dealer_stress_report' App (v3.0) =====" 等) ...
-```
-
-**只要滿足上述兩個成功標準（返回碼為 0 和包含成功標記），即代表該模組的執行流程、環境依賴（除有效 API 金鑰外）及路徑配置已通過驗證，表明其核心結構已準備好在目標環境中運行。**
 
 ---
 本文檔由 AI 輔助生成和分析。
