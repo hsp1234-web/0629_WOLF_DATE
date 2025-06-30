@@ -1,0 +1,102 @@
+# -*- coding: utf-8 -*-
+# @title 🐺 全景市場分析儀 - 標準化應用程式驗收平台 v7.0 (最終版)
+# @markdown ### ▶️ 點擊執行，驗收由 Jules 交付的、經過沙箱內測試的穩定應用程式
+# @markdown **架構原則**:
+# @markdown 本平台是「雙層架構」的最終執行層。它只負責拉取由 Jules 在沙箱中開發並強制驗證過的穩定分支，並執行其中標準化的原子化測試腳本。所有潛在的環境與路徑問題，都已由腳本內部的「自我校正」機制解決。
+# @markdown ---
+
+# ==============================================================================
+# @markdown ### ⚙️ 驗收目標設定 (請確認)
+# ==============================================================================
+# 請將此處更新為 Jules 存放最終成果的、已通過驗證的穩定分支名稱
+GITHUB_REPO_URL = "https://github.com/hsp1234-web/0629_WOLF_DATE.git" #@param {type:"string"}
+FINAL_STABLE_BRANCH = "release/v1.0.0-verified" #@param {type:"string"}
+
+# ==============================================================================
+# @markdown ### ▶️ 執行最終驗收
+# ==============================================================================
+
+import os
+import sys
+import subprocess
+from IPython.display import clear_output, display, HTML
+
+def main():
+    """
+    最終的、極簡化的 Colab 執行流程。
+    """
+    # 1. 環境準備
+    clear_output(wait=True)
+    display(HTML('<h3 style="color:#82B1FF;">✅ 環境準備就緒，開始執行標準化驗收...</h3>'))
+    project_path = "/content/wolf_date_analyzer"
+    os.chdir('/content/')
+    if os.path.exists(project_path):
+        subprocess.run(["rm", "-rf", project_path], check=True)
+
+    # 2. 專案部署 (只拉取指定的穩定分支)
+    print(f"⚪️ 正在從 '{FINAL_STABLE_BRANCH}' 穩定分支拉取程式碼...")
+    git_cmd = ["git", "clone", "--branch", FINAL_STABLE_BRANCH, "--single-branch", GITHUB_REPO_URL, project_path]
+    git_result = subprocess.run(git_cmd, capture_output=True, text=True, encoding='utf-8')
+
+    if git_result.returncode != 0:
+        print(f"❌ Git clone 失敗！請檢查倉庫 URL 和分支名稱 '{FINAL_STABLE_BRANCH}' 是否正確。")
+        print(f"錯誤訊息:\n{git_result.stderr.strip()}")
+        return
+
+    print(f"✅ 專案成功拉取至: {project_path}")
+    os.chdir(project_path)
+    
+    # 3. 依賴安裝 (Jules 已更新 requirements.txt)
+    print("\n⚪️ 正在安裝專案所需依賴...")
+    pip_cmd = [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"]
+    pip_result = subprocess.run(pip_cmd, capture_output=True, text=True)
+    if pip_result.returncode != 0:
+        print(f"❌ 依賴安裝失敗！\n{pip_result.stderr}")
+        return
+    print("✅ 專案依賴安裝成功！")
+
+    # 4. 標準化測試執行
+    print("\n" + "="*50)
+    print("🚀 即將執行「壓力指數報告 App」的密封整合測試...")
+    print("="*50)
+
+    try:
+        from google.colab import userdata
+        api_key = userdata.get('API_KEY_FRED')
+        if not api_key:
+            print("❌ 讀取 Secret 'API_KEY_FRED' 失敗！請在「密鑰 🔑」中設定。")
+            return
+        print("✅ 成功從 Colab Secret 讀取 API 金鑰。")
+        
+        # 根據 Jules 的報告，路徑已重構
+        test_script_path = "apps/stress_report_app/_test_run.py"
+        
+        env_vars = os.environ.copy()
+        env_vars["API_KEY_FRED"] = api_key
+        
+        # 執行 Jules 在沙箱中已驗證成功的標準指令
+        process = subprocess.Popen(
+            [sys.executable, test_script_path],
+            env=env_vars,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True, encoding='utf-8', bufsize=1
+        )
+        
+        for line in iter(process.stdout.readline, ''):
+            print(line, end='')
+        
+        process.wait()
+        print("\n" + "-"*50)
+        if process.returncode == 0:
+            print(f"🎉 驗收成功！標準化測試腳本以返回碼 {process.returncode} 正常結束。")
+            print("   這證明了我們設計的「雙層架構」與「密封測試」流程已成功打通！")
+        else:
+            print(f"🔥 驗收失敗！腳本以返回碼 {process.returncode} 異常結束。")
+            print("   這是一個意外情況，因為此腳本已在沙箱中驗證通過。請檢查 Colab 環境是否有特殊之處。")
+
+    except Exception as e:
+        print(f"❌ 在執行測試過程中發生未知錯誤: {e}")
+
+if __name__ == '__main__':
+    main()
