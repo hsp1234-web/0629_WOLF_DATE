@@ -1,0 +1,71 @@
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - Runner 啟動。使用 2 個併發工作進程。監控目錄: event_bus/queue
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 發現新任務: task_fail_1.json
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 已移動任務 'task_fail_1.json' 從 'event_bus/queue' 到 'event_bus/in_progress/task_fail_1.20250630191000_762887.json'
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 任務 'task_fail_1.json' 已移至 event_bus/in_progress/task_fail_1.20250630191000_762887.json，準備提交給工作進程。
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 發現新任務: task_read_error.json
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 已移動任務 'task_read_error.json' 從 'event_bus/queue' 到 'event_bus/in_progress/task_read_error.20250630191000_763588.json'
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 任務 'task_read_error.json' 已移至 event_bus/in_progress/task_read_error.20250630191000_763588.json，準備提交給工作進程。
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 工作進程開始處理: task_fail_1.json (來自 event_bus/in_progress/task_fail_1.20250630191000_762887.json)
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 工作進程開始處理: task_read_error.json (來自 event_bus/in_progress/task_read_error.20250630191000_763588.json)
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 子進程執行任務 'task_fail_1.json' (App: test_app_fail): python apps/test_app_fail/run.py --task-name FailTask1
+2025-06-30 19:10:00 - SOP4_Runner - [ERROR] - 工作進程錯誤：讀取任務檔案 'event_bus/in_progress/task_read_error.20250630191000_763588.json' 失敗: Expecting ',' delimiter: line 6 column 3 (char 93)
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 處理任務 'task_read_error.json' (App: N/A - Read Error) 的結果: 失敗
+2025-06-30 19:10:00 - SOP4_Runner - [ERROR] - --- STDERR for task_read_error.json (App: N/A - Read Error) ---
+2025-06-30 19:10:00 - SOP4_Runner - [ERROR] - 無法讀取任務檔案: Expecting ',' delimiter: line 6 column 3 (char 93)
+2025-06-30 19:10:00 - SOP4_Runner - [ERROR] - --- END STDERR for task_read_error.json (App: N/A - Read Error) ---
+2025-06-30 19:10:00 - SOP4_Runner - [INFO] - 已移動任務 'task_read_error.20250630191000_763588.json' 從 'event_bus/in_progress' 到 'event_bus/failed/task_read_error.task_read_error.json.read_error.20250630191000_766773.json'
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 發現新任務: task_script_not_found.json
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 已移動任務 'task_script_not_found.json' 從 'event_bus/queue' 到 'event_bus/in_progress/task_script_not_found.20250630191001_765247.json'
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 任務 'task_script_not_found.json' 已移至 event_bus/in_progress/task_script_not_found.20250630191001_765247.json，準備提交給工作進程。
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 工作進程開始處理: task_script_not_found.json (來自 event_bus/in_progress/task_script_not_found.20250630191001_765247.json)
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - 應用程式腳本 'apps/test_app_non_existent/run.py' (app_name: 'test_app_non_existent') 未找到。
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 處理任務 'task_script_not_found.json' (App: test_app_non_existent) 的結果: 失敗
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - --- STDERR for task_script_not_found.json (App: test_app_non_existent) ---
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - 應用程式腳本 'apps/test_app_non_existent/run.py' (app_name: 'test_app_non_existent') 未找到。
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - --- END STDERR for task_script_not_found.json (App: test_app_non_existent) ---
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 已移動任務 'task_script_not_found.20250630191001_765247.json' 從 'event_bus/in_progress' 到 'event_bus/failed/task_script_not_found.task_script_not_found.json.failed.20250630191001_767697.json'
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - 任務 'task_fail_1.json' (App: test_app_fail) 失敗，返回碼 1。
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 處理任務 'task_fail_1.json' (App: test_app_fail) 的結果: 失敗
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - --- STDOUT for task_fail_1.json (App: test_app_fail) ---
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - FAIL APP: Starting task FailTask1.
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - --- END STDOUT for task_fail_1.json (App: test_app_fail) ---
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - --- STDERR for task_fail_1.json (App: test_app_fail) ---
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - FAIL APP: Task FailTask1 is about to fail.
+2025-06-30 19:10:01 - SOP4_Runner - [ERROR] - --- END STDERR for task_fail_1.json (App: test_app_fail) ---
+2025-06-30 19:10:01 - SOP4_Runner - [INFO] - 已移動任務 'task_fail_1.20250630191000_762887.json' 從 'event_bus/in_progress' 到 'event_bus/failed/task_fail_1.task_fail_1.json.failed.20250630191001_821586.json'
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 發現新任務: task_success_1.json
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 已移動任務 'task_success_1.json' 從 'event_bus/queue' 到 'event_bus/in_progress/task_success_1.20250630191002_766369.json'
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 任務 'task_success_1.json' 已移至 event_bus/in_progress/task_success_1.20250630191002_766369.json，準備提交給工作進程。
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 發現新任務: task_success_2.json
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 已移動任務 'task_success_2.json' 從 'event_bus/queue' 到 'event_bus/in_progress/task_success_2.20250630191002_767102.json'
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 任務 'task_success_2.json' 已移至 event_bus/in_progress/task_success_2.20250630191002_767102.json，準備提交給工作進程。
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 工作進程開始處理: task_success_1.json (來自 event_bus/in_progress/task_success_1.20250630191002_766369.json)
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 子進程執行任務 'task_success_1.json' (App: test_app_success): python apps/test_app_success/run.py --task-name SuccessTask1_Long --duration 7
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 工作進程開始處理: task_success_2.json (來自 event_bus/in_progress/task_success_2.20250630191002_767102.json)
+2025-06-30 19:10:02 - SOP4_Runner - [INFO] - 子進程執行任務 'task_success_2.json' (App: test_app_success): python apps/test_app_success/run.py --task-name SuccessTask2_Short --duration 3
+2025-06-30 19:10:05 - SOP4_Runner - [INFO] - 任務 'task_success_2.json' (App: test_app_success) 成功完成。
+2025-06-30 19:10:05 - SOP4_Runner - [INFO] - 處理任務 'task_success_2.json' (App: test_app_success) 的結果: 成功
+2025-06-30 19:10:05 - SOP4_Runner - [INFO] - --- STDOUT for task_success_2.json (App: test_app_success) ---
+2025-06-30 19:10:05 - SOP4_Runner - [INFO] - SUCCESS APP: Starting task SuccessTask2_Short.
+2025-06-30 19:10:05 - SOP4_Runner - [INFO] - SUCCESS APP: Task SuccessTask2_Short completed after 3 seconds.
+2025-06-30 19:10:05 - SOP4_Runner - [INFO] - --- END STDOUT for task_success_2.json (App: test_app_success) ---
+2025-06-30 19:10:05 - SOP4_Runner - [INFO] - 已移動任務 'task_success_2.20250630191002_767102.json' 從 'event_bus/in_progress' 到 'event_bus/completed/task_success_2.task_success_2.json.completed.20250630191005_853192.json'
+2025-06-30 19:10:06 - SOP4_Runner - [INFO] - 發現新任務: task_success_3.json
+2025-06-30 19:10:06 - SOP4_Runner - [INFO] - 已移動任務 'task_success_3.json' 從 'event_bus/queue' 到 'event_bus/in_progress/task_success_3.20250630191006_769884.json'
+2025-06-30 19:10:06 - SOP4_Runner - [INFO] - 任務 'task_success_3.json' 已移至 event_bus/in_progress/task_success_3.20250630191006_769884.json，準備提交給工作進程。
+2025-06-30 19:10:06 - SOP4_Runner - [INFO] - 工作進程開始處理: task_success_3.json (來自 event_bus/in_progress/task_success_3.20250630191006_769884.json)
+2025-06-30 19:10:06 - SOP4_Runner - [INFO] - 子進程執行任務 'task_success_3.json' (App: test_app_success): python apps/test_app_success/run.py --task-name SuccessTask3_Medium --duration 4
+2025-06-30 19:10:09 - SOP4_Runner - [INFO] - 任務 'task_success_1.json' (App: test_app_success) 成功完成。
+2025-06-30 19:10:09 - SOP4_Runner - [INFO] - 處理任務 'task_success_1.json' (App: test_app_success) 的結果: 成功
+2025-06-30 19:10:09 - SOP4_Runner - [INFO] - --- STDOUT for task_success_1.json (App: test_app_success) ---
+2025-06-30 19:10:09 - SOP4_Runner - [INFO] - SUCCESS APP: Starting task SuccessTask1_Long.
+2025-06-30 19:10:09 - SOP4_Runner - [INFO] - SUCCESS APP: Task SuccessTask1_Long completed after 7 seconds.
+2025-06-30 19:10:09 - SOP4_Runner - [INFO] - --- END STDOUT for task_success_1.json (App: test_app_success) ---
+2025-06-30 19:10:09 - SOP4_Runner - [INFO] - 已移動任務 'task_success_1.20250630191002_766369.json' 從 'event_bus/in_progress' 到 'event_bus/completed/task_success_1.task_success_1.json.completed.20250630191009_828578.json'
+2025-06-30 19:10:10 - SOP4_Runner - [INFO] - 任務 'task_success_3.json' (App: test_app_success) 成功完成。
+2025-06-30 19:10:10 - SOP4_Runner - [INFO] - 處理任務 'task_success_3.json' (App: test_app_success) 的結果: 成功
+2025-06-30 19:10:10 - SOP4_Runner - [INFO] - --- STDOUT for task_success_3.json (App: test_app_success) ---
+2025-06-30 19:10:10 - SOP4_Runner - [INFO] - SUCCESS APP: Starting task SuccessTask3_Medium.
+2025-06-30 19:10:10 - SOP4_Runner - [INFO] - SUCCESS APP: Task SuccessTask3_Medium completed after 4 seconds.
+2025-06-30 19:10:10 - SOP4_Runner - [INFO] - --- END STDOUT for task_success_3.json (App: test_app_success) ---
+2025-06-30 19:10:10 - SOP4_Runner - [INFO] - 已移動任務 'task_success_3.20250630191006_769884.json' 從 'event_bus/in_progress' 到 'event_bus/completed/task_success_3.task_success_3.json.completed.20250630191010_837516.json'

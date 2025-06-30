@@ -1,0 +1,6 @@
+{
+  "app_name": "test_app_read_error",
+  "params": {
+    "task_name": "ReadErrorTask"
+  }
+  // Missing closing brace

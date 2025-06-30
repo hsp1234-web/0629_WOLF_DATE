@@ -1,0 +1,6 @@
+{
+  "app_name": "test_app_fail",
+  "params": {
+    "task_name": "FailTask1"
+  }
+}

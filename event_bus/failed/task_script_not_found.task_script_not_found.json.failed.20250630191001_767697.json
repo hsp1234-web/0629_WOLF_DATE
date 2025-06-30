@@ -1,0 +1,6 @@
+{
+  "app_name": "test_app_non_existent",
+  "params": {
+    "task_name": "ScriptNotFoundTask"
+  }
+}

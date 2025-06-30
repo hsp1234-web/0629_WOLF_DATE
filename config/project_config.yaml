@@ -102,3 +102,8 @@ visualization_params:
     high: 80
     medium: 60
     low: 30
+
+# Runner 設定
+runner_settings:
+  max_concurrent_apps: 2
+  python_executable: "python"
