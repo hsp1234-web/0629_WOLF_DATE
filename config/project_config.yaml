@@ -6,7 +6,7 @@
 api_keys:
   fred: "c85a224a0e0d72a7bccb471c0021eb7b" # 使用者提供的 FRED API 金鑰
   # ny_fed: (NY Fed 通常不需要金鑰，但若有其他需金鑰的 API 可放此)
-  gemini: "YOUR_GEMINI_API_KEY_PLACEHOLDER" # Gemini API 金鑰 (若使用，請替換)
+  gemini: "AIzaSyCkb9yr6OQ69_CK6na9RuO_ZTwg1DVxzZ8" # 使用者提供的 Gemini API 金鑰
 
 # 預設日期範圍 (若事件觸發時未提供)
 default_date_range:
