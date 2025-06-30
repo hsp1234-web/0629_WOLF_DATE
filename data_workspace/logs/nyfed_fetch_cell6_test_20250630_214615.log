@@ -1,0 +1,27 @@
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - ==================================================
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - Starting NY Fed Primary Dealer Data Fetch Test (Cell 6 Logic)
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - ==================================================
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - *** 警告：此步驟將合併定義可能不同的 SBN(Gross?) 和 SBP(Net?) 數據！解釋需謹慎！ ***
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - Processing file 1/6: https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx (SBN2024)
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - Could not auto-detect valid header or required columns for https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx. Skipping.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - Processing file 2/6: https://markets.newyorkfed.org/api/pd/get/SBN2022/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx (SBN2022)
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - Could not auto-detect valid header or required columns for https://markets.newyorkfed.org/api/pd/get/SBN2022/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx. Skipping.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - Processing file 3/6: https://markets.newyorkfed.org/api/pd/get/SBN2015/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx (SBN2015)
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - Could not auto-detect valid header or required columns for https://markets.newyorkfed.org/api/pd/get/SBN2015/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx. Skipping.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - Processing file 4/6: https://markets.newyorkfed.org/api/pd/get/SBN2013/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx (SBN2013)
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - Could not auto-detect valid header or required columns for https://markets.newyorkfed.org/api/pd/get/SBN2013/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx. Skipping.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - Processing file 5/6: https://markets.newyorkfed.org/api/pd/get/SBP2013/timeseries/PDPUSGCS3LNOP_PDPUSGCS36NOP_PDPUSGCS611NOP_PDPUSGCSM11NOP.xlsx (SBP2013)
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - Could not auto-detect valid header or required columns for https://markets.newyorkfed.org/api/pd/get/SBP2013/timeseries/PDPUSGCS3LNOP_PDPUSGCS36NOP_PDPUSGCS611NOP_PDPUSGCSM11NOP.xlsx. Skipping.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - Processing file 6/6: https://markets.newyorkfed.org/api/pd/get/SBP2001/timeseries/PDPUSGCS5LNOP_PDPUSGCS5MNOP.xlsx (SBP2001)
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - Could not auto-detect valid header or required columns for https://markets.newyorkfed.org/api/pd/get/SBP2001/timeseries/PDPUSGCS5LNOP_PDPUSGCS5MNOP.xlsx. Skipping.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - File processing loop completed. Successfully processed 0/6 files.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] - Details of failed files (6):
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] -   - URL: https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx, Reason: Header/Column detection failed
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] -   - URL: https://markets.newyorkfed.org/api/pd/get/SBN2022/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx, Reason: Header/Column detection failed
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] -   - URL: https://markets.newyorkfed.org/api/pd/get/SBN2015/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx, Reason: Header/Column detection failed
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] -   - URL: https://markets.newyorkfed.org/api/pd/get/SBN2013/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx, Reason: Header/Column detection failed
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] -   - URL: https://markets.newyorkfed.org/api/pd/get/SBP2013/timeseries/PDPUSGCS3LNOP_PDPUSGCS36NOP_PDPUSGCS611NOP_PDPUSGCSM11NOP.xlsx, Reason: Header/Column detection failed
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [WARNING] -   - URL: https://markets.newyorkfed.org/api/pd/get/SBP2001/timeseries/PDPUSGCS5LNOP_PDPUSGCS5MNOP.xlsx, Reason: Header/Column detection failed
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [ERROR] - No data was successfully processed from any NY Fed URL. Final series will be empty.
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - SUCCESS: Consolidated NY Fed data (Cell 6 logic) saved to /app/data_workspace/raw_data/NY_FED_Primary_Dealer_Positions_Cell6_Logic.csv
+2025-06-30 21:46:15 - NYFedFetchCell6Test - [INFO] - NY Fed Primary Dealer Data Fetch Test (Cell 6 Logic) Completed.

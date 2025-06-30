@@ -1,0 +1,22 @@
+2025-06-30 21:33:49 - NYFedFetchTest - [INFO] - ==================================================
+2025-06-30 21:33:49 - NYFedFetchTest - [INFO] - Starting NY Fed Primary Dealer Data Fetch Test
+2025-06-30 21:33:49 - NYFedFetchTest - [INFO] - ==================================================
+2025-06-30 21:33:49 - NYFedFetchTest - [INFO] - Fetching and processing file from: https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Detected date-like column in first position: As Of Date. Using it as date column.
+2025-06-30 21:33:50 - NYFedFetchTest - [WARNING] - Could not find required 'Time Series' (or equivalent) or 'Value' (or equivalent) columns in https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx. Skipping file.
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Fetching and processing file from: https://markets.newyorkfed.org/api/pd/get/SBN2022/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Detected date-like column in first position: As Of Date. Using it as date column.
+2025-06-30 21:33:50 - NYFedFetchTest - [WARNING] - Could not find required 'Time Series' (or equivalent) or 'Value' (or equivalent) columns in https://markets.newyorkfed.org/api/pd/get/SBN2022/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx. Skipping file.
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Fetching and processing file from: https://markets.newyorkfed.org/api/pd/get/SBN2015/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Detected date-like column in first position: As Of Date. Using it as date column.
+2025-06-30 21:33:50 - NYFedFetchTest - [WARNING] - Could not find required 'Time Series' (or equivalent) or 'Value' (or equivalent) columns in https://markets.newyorkfed.org/api/pd/get/SBN2015/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx. Skipping file.
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Fetching and processing file from: https://markets.newyorkfed.org/api/pd/get/SBN2013/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Detected date-like column in first position: As Of Date. Using it as date column.
+2025-06-30 21:33:50 - NYFedFetchTest - [WARNING] - Could not find required 'Time Series' (or equivalent) or 'Value' (or equivalent) columns in https://markets.newyorkfed.org/api/pd/get/SBN2013/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx. Skipping file.
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Fetching and processing file from: https://markets.newyorkfed.org/api/pd/get/SBP2013/timeseries/PDPUSGCS3LNOP_PDPUSGCS36NOP_PDPUSGCS611NOP_PDPUSGCSM11NOP.xlsx
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Detected date-like column in first position: As Of Date. Using it as date column.
+2025-06-30 21:33:50 - NYFedFetchTest - [WARNING] - Could not find required 'Time Series' (or equivalent) or 'Value' (or equivalent) columns in https://markets.newyorkfed.org/api/pd/get/SBP2013/timeseries/PDPUSGCS3LNOP_PDPUSGCS36NOP_PDPUSGCS611NOP_PDPUSGCSM11NOP.xlsx. Skipping file.
+2025-06-30 21:33:50 - NYFedFetchTest - [INFO] - Fetching and processing file from: https://markets.newyorkfed.org/api/pd/get/SBP2001/timeseries/PDPUSGCS5LNOP_PDPUSGCS5MNOP.xlsx
+2025-06-30 21:33:51 - NYFedFetchTest - [INFO] - Detected date-like column in first position: As Of Date. Using it as date column.
+2025-06-30 21:33:51 - NYFedFetchTest - [WARNING] - Could not find required 'Time Series' (or equivalent) or 'Value' (or equivalent) columns in https://markets.newyorkfed.org/api/pd/get/SBP2001/timeseries/PDPUSGCS5LNOP_PDPUSGCS5MNOP.xlsx. Skipping file.
+2025-06-30 21:33:51 - NYFedFetchTest - [ERROR] - Test FAILED. No data was processed from any NY Fed URL.

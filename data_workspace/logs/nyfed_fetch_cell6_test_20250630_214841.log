@@ -1,0 +1,7 @@
+2025-06-30 21:48:41 - NYFedFetchCell6Test - [INFO] - ==================================================
+2025-06-30 21:48:41 - NYFedFetchCell6Test - [INFO] - Starting NY Fed Primary Dealer Data Fetch Test (Cell 6 Logic)
+2025-06-30 21:48:41 - NYFedFetchCell6Test - [INFO] - ==================================================
+2025-06-30 21:48:41 - NYFedFetchCell6Test - [WARNING] - *** 警告：此步驟將合併定義可能不同的 SBN(Gross?) 和 SBP(Net?) 數據！解釋需謹慎！ ***
+2025-06-30 21:48:41 - NYFedFetchCell6Test - [INFO] - Processing file 1/6: https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx (SBN2024)
+2025-06-30 21:48:41 - NYFedFetchCell6Test - [INFO] - DEBUG: Saved first Excel file to /app/data_workspace/debug/temp_excel_file.xlsx
+2025-06-30 21:48:41 - NYFedFetchCell6Test - [INFO] - DEBUG: Intentionally stopping after saving the first file for inspection.
