@@ -148,5 +148,33 @@ Financial_Forensics_Engine/
 
 在特定的沙箱環境（如 Google Colab 或類似的雲端 Notebook）中執行時，可能會遇到檔案系統操作限制。如果遇到此類問題，可能需要將部署和執行步驟進一步分解。
 
+## 標準化模組測試
+
+為了確保核心模組的穩定性和功能正確性，我們為部分關鍵應用程式提供了標準化的原子化測試腳本。
+
+### 壓力指數報告模組 (apps/x21_generate_dealer_stress_report)
+
+此模組用於生成一級交易商壓力指數分析報告。其原子化測試腳本位於 `apps/x21_generate_dealer_stress_report/_test_run.py`。
+
+**執行測試指令：**
+
+在執行測試前，請確保您已經設定了 FRED API 金鑰。此金鑰需要通過名為 `API_KEY_FRED` 的環境變數傳遞給測試腳本。
+
+```bash
+API_KEY_FRED="您的FRED_API金鑰" python apps/x21_generate_dealer_stress_report/_test_run.py
+```
+
+**預期輸出：**
+
+如果測試成功執行，您將在控制台看到類似以下的訊息：
+
+```
+[*] 開始執行原子化測試，日期範圍: 2024-01-01 至 2024-01-15
+... (模組執行時的日誌訊息) ...
+✅ [SOP-COMPLIANT TEST] Stress report module executed successfully.
+```
+
+如果缺少 API 金鑰或發生其他錯誤，測試腳本會印出相應的錯誤訊息。
+
 ---
 本文檔由 AI 輔助生成和分析。

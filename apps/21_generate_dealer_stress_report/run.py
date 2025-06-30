@@ -130,11 +130,19 @@ def run_app(event_params: Dict[str, Any] = None):
     # 1. 載入設定檔
     config = load_config() # 若失敗會拋出異常並終止
     api_keys = config.get('api_keys', {})
-    fred_api_key = api_keys.get('fred')
+
+    # 標準化金鑰管理：優先從環境變數讀取 FRED API Key
+    fred_api_key = os.environ.get('API_KEY_FRED')
+    if fred_api_key:
+        logger.info("成功從環境變數 'API_KEY_FRED' 讀取 FRED API 金鑰。")
+    else:
+        logger.info("環境變數 'API_KEY_FRED' 未設定，嘗試從設定檔讀取。")
+        fred_api_key = api_keys.get('fred')
+
     gemini_api_key = api_keys.get('gemini') # 用於 reporter
 
     if not fred_api_key: # FRED Key 是基礎數據的關鍵
-        logger.critical("CRITICAL: 設定檔中未找到 FRED API 金鑰 (api_keys.fred)。無法繼續。")
+        logger.critical("CRITICAL: 環境變數和設定檔中均未找到 FRED API 金鑰。無法繼續。")
         return
 
     # 2. 決定日期範圍
