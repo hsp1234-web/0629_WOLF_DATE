@@ -145,4 +145,4 @@ if __name__ == '__main__':
     logger_fail_safe.info("This info message should appear on console even if file logging failed.")
     print(f"Logger 'FailSafeLogger' handlers (should only have StreamHandler if path was bad): {logging.getLogger('FailSafeLogger').handlers}")
 
-```
+# ```
