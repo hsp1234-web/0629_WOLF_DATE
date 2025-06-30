@@ -8,3 +8,6 @@ PyYAML
 google-generativeai
 pytest
 pytest-mock
+yfinance
+fredapi
+plotly
