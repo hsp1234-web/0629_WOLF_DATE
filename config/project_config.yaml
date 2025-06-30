@@ -12,3 +12,4 @@ data_fetching:
     Volatility_Index: '^MOVE'
     VIX: '^VIX'
     TLT_Close: 'TLT'
+  nyfed_data_urls: [] # 新增此鍵，即使為空，以避免 KeyError

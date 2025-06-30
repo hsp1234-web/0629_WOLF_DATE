@@ -56,9 +56,9 @@ def test_app_execution_as_subprocess():
 
     print(f"[*] 目標腳本路徑: {target_script}")
 
-    # 步驟二：定義測試參數
-    start_date = "2024-01-01"
-    end_date = "2024-01-15"
+    # 步驟二：定義測試參數 (擴大日期範圍以獲取更多數據點)
+    start_date = "2023-01-01" # 修改開始日期
+    end_date = "2024-01-15"   # 結束日期不變，確保超過一年
     # 使用 'test_run' output_format，這在 run.py 中通常意味著不實際寫入檔案，
     # 或執行簡化的輸出，適合測試。
     output_format = "test_run"
