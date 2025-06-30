@@ -346,17 +346,24 @@ if __name__ == "__main__":
         # Defaults are already set
 
     # --- Setup File Logging for Runner ---
+    # Logger instance 'logger' is already obtained from setup_logger at the global scope.
+    # We just need to potentially add a file handler to it if not already added by an earlier call
+    # or if we want a specific file log for the runner distinct from other setup_logger uses.
+
+    # The global `logger = setup_logger('SOP4_Runner', logging.INFO)` call already sets up console.
+    # We now add file logging using the same logger instance.
     os.makedirs(LOG_DIR, exist_ok=True)
-    # Use the logger instance obtained from setup_logger
     log_filename = os.path.join(LOG_DIR, f"runner_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
-    # Use a similar format as defined in src/utils/logger.py for consistency
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - [%(levelname)s] - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler) # Add file handler to the logger from setup_logger
+
+    # Use the enhanced setup_logger to add the file handler to the existing 'SOP4_Runner' logger
+    # The level used here will apply to the file handler if it's being newly added,
+    # and potentially adjust the logger's overall level if this new level is more verbose.
+    # Assuming project_config and runner_settings are loaded to get a configured log level.
+    runner_log_level_str = runner_settings.get("log_level", "INFO").upper()
+    runner_log_level = getattr(logging, runner_log_level_str, logging.INFO)
+
+    setup_logger('SOP4_Runner', log_file_path_str=log_filename, level=runner_log_level)
+    logger.info(f"Runner file logging configured at level {runner_log_level_str}. Log file: {log_filename}")
 
     # Ensure event bus directories exist (moved to main_loop for clarity, but can be here too)
     # os.makedirs(QUEUE_DIR, exist_ok=True)
