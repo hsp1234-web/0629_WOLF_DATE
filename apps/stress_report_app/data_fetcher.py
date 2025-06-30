@@ -116,13 +116,17 @@ def fetch_fred_data(api_key: str, start_date: str, end_date: str, series_map: Di
         if series_data is not None:
             # 頻率處理與對齊 (類似原邏輯，但更清晰)
             original_count = len(series_data.dropna())
-            freq_str = pd.infer_freq(series_data.index)
 
-            if freq_str and ('W' in freq_str.upper() or 'M' in freq_str.upper()):
-                logger.debug(f"    序列 '{target_name}' 是 {freq_str} 頻率，將重新索引到每日並向前填充。")
+            if len(series_data.index) < 3:
+                logger.debug(f"    序列 '{target_name}' 的數據點 ({len(series_data.index)}) 過少，直接進行每日向前填充。")
                 s_aligned = series_data.reindex(daily_index_for_fred).ffill()
-            else: # 日頻或無法推斷，直接對齊
-                s_aligned = series_data.reindex(daily_index_for_fred, method='ffill') # 保證所有日期都有值
+            else:
+                freq_str = pd.infer_freq(series_data.index)
+                if freq_str and ('W' in freq_str.upper() or 'M' in freq_str.upper()):
+                    logger.debug(f"    序列 '{target_name}' 是 {freq_str} 頻率，將重新索引到每日並向前填充。")
+                    s_aligned = series_data.reindex(daily_index_for_fred).ffill()
+                else: # 日頻或無法推斷，直接對齊
+                    s_aligned = series_data.reindex(daily_index_for_fred, method='ffill') # 保證所有日期都有值
 
             aligned_count = s_aligned.count()
             logger.info(f"    成功 (原始 {original_count} -> 每日填充後 {aligned_count} 點)")
@@ -276,193 +280,245 @@ def get_vix_index(start_date: str, end_date: str, config: dict) -> Optional[pd.S
     return None
 
 
-# fetch_nyfed_data 保持不變 (與前一版本相同)
-def fetch_nyfed_data(urls_config: List[str], sbp_cols_config: Dict[str, List[str]]) -> Optional[pd.Series]:
+def fetch_nyfed_data(ny_fed_positions_urls: List[str], sbp_cols_config: Dict[str, List[str]]) -> Optional[pd.Series]:
     """
-    從 NY Fed 網站下載並處理一級交易商的公債持有量數據。
-    (此函式邏輯與先前版本相同，此處為保持完整性而複製)
+    從紐約聯儲 (NY Fed) 網站獲取一級交易商的美國公債持有量數據。
+    此版本整合了來自 `一級交易pro.py` Cell 6 的經過驗證的解析邏輯。
+
+    主要步驟：
+    1. 遍歷提供的 URL 列表。
+    2. 對於每個 URL，使用 `requests.Session` 下載 Excel 檔案內容至記憶體。
+    3. 解析 Excel：
+        - 嘗試自動檢測表頭行和日期/數值列。
+        - 讀取數據，將日期列設為索引，處理無效數據。
+    4. 數據轉換與提取：
+        - 將長格式數據透視為寬格式 (使用 `pivot_table`)。
+        - 根據 URL 特徵（如包含 "SBN" 或 "SBP"）及 `sbp_cols_config`
+          (對應原始腳本中的 `sbp2013_cols_to_sum`, `sbp2001_cols_to_sum`) 決定要加總的欄位。
+        - 加總選定的欄位以獲得每日總持有量，並清理結果 (移除 NaN 和 0)。
+    5. 合併來自所有成功處理的檔案的數據。
+    6. 清理最終的時間序列（排序、去重、保留最新值）。
+
+    Args:
+        ny_fed_positions_urls (List[str]): 包含 NY Fed Excel 檔案 URL 的列表。
+        sbp_cols_config (Dict[str, List[str]]):
+            一個字典，用於配置如何根據文件名中的關鍵字 (例如 'SBP2013', 'SBP2001')
+            來選擇要加總的欄位。鍵是關鍵字，值是要加總的欄位名列表。
+            例如: {'SBP2013': ['col_A', 'col_B'], 'SBP2001': ['col_X', 'col_Y']}
+            如果文件名包含 'SBN'，則會嘗試加總所有以 'PDPOSGSC-' 開頭的欄位。
+            此參數對應原始腳本中 `PROJECT_CONFIG` 內的 `sbpXXXX_cols_to_sum`。
+            在此實現中，我們期望 `sbp_cols_config` 的鍵直接是 'SBP2013', 'SBP2001' 等。
+
+    Returns:
+        pd.Series: 一個時間序列 (索引為日期，值為百萬美元的總持有量，命名為 'Total_Gross_Positions_Millions')。
+                   如果獲取或處理失敗，則返回一個空的 Series。
     """
-    logger.info(f"主函式：從 NY Fed 獲取並處理持有量數據，共 {len(urls_config)} 個文件...")
-    all_positions_data = []
+    logger.info(f"開始從 {len(ny_fed_positions_urls)} 個 URL 獲取 NY Fed 持有量數據 (使用 '一級交易pro.py' Cell 6 邏輯)。")
+    all_positions_data = []  # 儲存從各個文件讀取的 Series
+    processed_files_count = 0
+    failed_files_info = [] # 記錄失敗文件及其原因
+
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     })
 
-    for i, url in enumerate(urls_config):
+    for i, url in enumerate(ny_fed_positions_urls):
         file_source_name = url.split('/')[-3] if len(url.split('/')) > 2 else f"File_{i+1}"
-        logger.info(f"  處理 NY Fed 文件 {i+1}/{len(urls_config)} ({file_source_name})...")
+        logger.info(f"處理文件 {i + 1}/{len(ny_fed_positions_urls)} ({file_source_name}): {url}")
+
         try:
-            logger.debug(f"    正在下載: {url}")
+            # --- 1a. 下載 Excel 文件 ---
+            logger.debug(f"文件 {file_source_name}: 正在下載...")
             response_excel = session.get(url, timeout=120)
             response_excel.raise_for_status()
             excel_content = io.BytesIO(response_excel.content)
-            logger.debug("    下載完成.")
+            logger.info(f"文件 {file_source_name}: 下載成功。")
 
-            logger.debug("    正在解析 (嘗試自動檢測表頭)...")
-            header_row = None; date_col_name = None; data_positions_long = None
-            possible_headers = [3, 4, 0] # 根據觀察，表頭通常在這些行
-            for h_idx, h in enumerate(possible_headers):
+            # --- 1b. 解析 Excel (自動檢測表頭) ---
+            logger.debug(f"文件 {file_source_name}: 正在解析 (嘗試自動檢測表頭)...")
+            header_row_detected = None # 檢測到的表頭行號 (0-indexed)
+            date_col_name_parsed = None # 解析時檢測到的日期列名
+            data_positions_long = None
+
+            possible_headers = [3, 4, 0] # 優先嘗試的表頭行號
+            for h_val in possible_headers:
                 try:
-                    # 嘗試讀取少量行來判斷格式
-                    df_peek = pd.read_excel(excel_content, header=h, nrows=5, engine='openpyxl')
-                    excel_content.seek(0) # 重置指針以便後續完整讀取或再次嘗試
+                    df_peek = pd.read_excel(excel_content, header=h_val, nrows=5, engine='openpyxl')
+                    excel_content.seek(0)
 
                     cols_lower = [str(c).lower() for c in df_peek.columns]
-                    # 關鍵列名變體
-                    ts_col_variants = ['time series', 'series name']
-                    val_col_variants = ['value (millions)', 'value']
-                    date_col_variants = ['effective date', 'as of date', df_peek.columns[0] if len(df_peek.columns) > 0 else None]
+                    ts_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['time series', 'series name']), None)
+                    val_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['value (millions)', 'value']), None)
+                    date_col_cand_for_idx = None
+                    if len(df_peek.columns) > 0 :
+                        first_col_name = df_peek.columns[0]
+                        # 優先 'effective date'，其次才是第一列 (如果它像日期)
+                        if 'effective date' in cols_lower:
+                            date_col_cand_for_idx = df_peek.columns[cols_lower.index('effective date')]
+                        elif not pd.to_datetime(df_peek.iloc[:, 0], errors='coerce').isna().all():
+                             date_col_cand_for_idx = first_col_name
 
-                    actual_ts_col_name = next((col for col_variant in ts_col_variants if col_variant in cols_lower for col in df_peek.columns if str(col).lower() == col_variant), None)
-                    actual_val_col_name = next((col for col_variant in val_col_variants if col_variant in cols_lower for col in df_peek.columns if str(col).lower() == col_variant), None)
-                    actual_date_col_name = next((col for col_variant in date_col_variants if col_variant and (str(col_variant).lower() in cols_lower or col_variant == df_peek.columns[0]) for col in df_peek.columns if str(col).lower() == str(col_variant).lower() or col == col_variant), None)
-
-                    if actual_ts_col_name and actual_val_col_name and actual_date_col_name:
-                        header_row = h
-                        date_col_name = actual_date_col_name # 使用檢測到的日期列名
-                        data_positions_long = pd.read_excel(excel_content, header=header_row,
-                                                            index_col=date_col_name, parse_dates=True,
-                                                            engine='openpyxl')
-                        logger.debug(f"    檢測到有效表頭在第 {header_row+1} 行, 日期列: '{date_col_name}' (嘗試 {h_idx+1}/{len(possible_headers)})")
-                        break # 找到有效的表頭
-                except Exception as peek_err:
-                    logger.debug(f"    嘗試 header={h} (嘗試 {h_idx+1}) 解析失敗: {peek_err}")
-                    excel_content.seek(0) # 出錯也要重置指針
+                    if ts_col_cand and val_col_cand and date_col_cand_for_idx:
+                        header_row_detected = h_val
+                        date_col_name_parsed = date_col_cand_for_idx
+                        data_positions_long = pd.read_excel(excel_content, header=header_row_detected,
+                                                            index_col=date_col_name_parsed,
+                                                            parse_dates=True, engine='openpyxl')
+                        logger.info(f"文件 {file_source_name}: 檢測到有效表頭在第 {header_row_detected + 1} 行, 日期列: '{date_col_name_parsed}'.")
+                        excel_content.seek(0)
+                        break
+                except Exception:
+                    excel_content.seek(0)
                     continue
 
             if data_positions_long is None:
-                logger.warning(f"    文件 {file_source_name}: 無法自動檢測有效的表頭行或關鍵列。跳過此文件。")
+                logger.warning(f"文件 {file_source_name}: 無法自動檢測有效的表頭行或日期/數值列。跳過此文件。")
+                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': '解析失敗 (無法檢測表頭/關鍵列)'})
                 continue
 
-            logger.debug("    正在清理長格式數據...")
-            # 確保索引是 DatetimeIndex 並標準化 (已在讀取時 parse_dates=True, index_col=date_col_name)
-            # date_col_name 是從 df_peek.columns[] 中獲取的，它本身就是有效的列名
-            # data_positions_long 的索引就是 parse_dates 的結果
+            # --- 1c. 清理長格式數據 ---
+            logger.debug(f"文件 {file_source_name}: 正在清理長格式數據...")
+            if not isinstance(data_positions_long.index, pd.DatetimeIndex): # 確保索引是日期
+                 data_positions_long.index = pd.to_datetime(data_positions_long.index, errors='coerce')
+                 data_positions_long.dropna(subset=[data_positions_long.index.name], inplace=True) # 移除轉換失敗的
+            data_positions_long.index = data_positions_long.index.normalize() # 標準化日期
 
-            if not isinstance(data_positions_long.index, pd.DatetimeIndex):
-                # 這種情況理論上不應發生，因為 parse_dates=True
-                logger.warning(f"    文件 {file_source_name}: 索引不是 DatetimeIndex，嘗試強制轉換。")
-                data_positions_long.index = pd.to_datetime(data_positions_long.index, errors='coerce')
+            # 找到實際的 Time Series 和 Value 列名 (因為大小寫和名稱可能多樣)
+            actual_ts_col_final = next((col for col in data_positions_long.columns if str(col).lower() in ['time series', 'series name']), None)
+            actual_val_col_final = next((col for col in data_positions_long.columns if str(col).lower() in ['value (millions)', 'value']), None)
 
-            # 移除日期索引轉換失敗的行 (變成 NaT)
-            data_positions_long = data_positions_long[data_positions_long.index.notna()]
+            if not actual_ts_col_final or not actual_val_col_final:
+                logger.warning(f"文件 {file_source_name}: 清理後仍缺少 'Time Series' 或 'Value' 欄位。跳過。")
+                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': "缺少 'Time Series' 或 'Value' 欄位"})
+                continue
+
+            data_positions_long[actual_val_col_final] = pd.to_numeric(data_positions_long[actual_val_col_final], errors='coerce')
+            initial_rows_count = len(data_positions_long)
+            data_positions_long.dropna(subset=[actual_val_col_final, actual_ts_col_final], inplace=True)
+            logger.debug(f"文件 {file_source_name}: 清理完成 (移除 {initial_rows_count - len(data_positions_long)} 行無效數據)。")
 
             if data_positions_long.empty:
-                logger.warning(f"    文件 {file_source_name}: 日期轉換或索引處理後無數據。跳過。")
+                logger.warning(f"文件 {file_source_name}: 清理後無有效數據。跳過。")
+                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': '清理後無數據'})
                 continue
 
-            data_positions_long.index = data_positions_long.index.normalize() # 標準化為午夜
-            # 在這裡，data_positions_long.index.name 應該等於 date_col_name (被用作 index_col 的那個原始列名)
-            # 如果原始Excel的日期列沒有名字，則 data_positions_long.index.name 可能為 None
+            # --- 1d. 轉換為寬格式 ---
+            logger.debug(f"文件 {file_source_name}: 正在轉換為寬格式...")
+            try:
+                # 重置索引以將日期變為列 (原日期索引名變為第一列的列名)
+                data_positions_long.reset_index(inplace=True)
+                # 此時 date_col_name_parsed 應該是第一列的名稱
 
-            # 再次確認 Time Series 和 Value 列名 (因為 read_excel 後列名可能變化)
-            cols_lower_full = [str(c).lower() for c in data_positions_long.columns]
-            actual_ts_col = next((col for col_variant in ts_col_variants if col_variant in cols_lower_full for col in data_positions_long.columns if str(col).lower() == col_variant), None)
-            actual_val_col = next((col for col_variant in val_col_variants if col_variant in cols_lower_full for col in data_positions_long.columns if str(col).lower() == col_variant), None)
-
-            if not actual_ts_col or not actual_val_col:
-                logger.warning(f"    文件 {file_source_name}: 清理後缺少 '{ts_col_variants[0]}' 或 '{val_col_variants[0]}' 欄位。跳過。")
+                # 處理可能的重複項 (同一天同一序列) - 在 pivot_table 中用 aggfunc='mean'
+                data_positions_wide = pd.pivot_table(
+                    data_positions_long,
+                    index=date_col_name_parsed, # 使用解析時得到的日期列名
+                    columns=actual_ts_col_final,
+                    values=actual_val_col_final,
+                    aggfunc='mean'
+                )
+                logger.info(f"文件 {file_source_name}: 轉換寬格式成功 ({len(data_positions_wide)} 行 x {len(data_positions_wide.columns)} 欄)。")
+            except Exception as e_pivot:
+                logger.error(f"文件 {file_source_name}: 轉換寬格式失敗: {e_pivot}。跳過。", exc_info=True)
+                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'Pivot失敗: {e_pivot}'})
                 continue
 
-            data_positions_long[actual_val_col] = pd.to_numeric(data_positions_long[actual_val_col], errors='coerce')
-            data_positions_long.dropna(subset=[actual_val_col, actual_ts_col], inplace=True) # 移除數值無效或 Time Series 為空的行
-            logger.debug("    長格式數據清理完成.")
-            if data_positions_long.empty:
-                logger.warning(f"    文件 {file_source_name}: 清理後無有效數據。跳過。")
-                continue
+            # --- 1e. 加總持有量 ---
+            target_cols_list_for_sum = []
+            source_type_id = "未知"
 
-            logger.debug("    正在轉換為寬格式...")
-            # 重置索引以將日期變為列，方便後續 pivot
-            data_positions_long.reset_index(inplace=True)
-            # date_col_actual 現在是重置索引後的第一列，即原來的索引名
-            date_col_actual_for_pivot = data_positions_long.columns[0]
+            if 'SBN' in url.upper():
+                 source_type_id = "SBN"
+                 target_cols_list_for_sum = [c for c in data_positions_wide.columns if isinstance(c, str) and c.startswith('PDPOSGSC-')]
+            else: # 檢查 sbp_cols_config (例如 SBP2013, SBP2001)
+                for config_key_from_param, cols_in_config in sbp_cols_config.items():
+                    if config_key_from_param.upper() in url.upper():
+                        source_type_id = config_key_from_param
+                        target_cols_list_for_sum = cols_in_config
+                        break
 
-            # 處理可能的重複項 (同一天同一序列可能有多行) - 取平均值
-            data_positions_long = data_positions_long.groupby(
-                [date_col_actual_for_pivot, actual_ts_col]
-            )[actual_val_col].mean().reset_index()
+            if not target_cols_list_for_sum:
+                 logger.warning(f"文件 {file_source_name}: 未找到用於加總的目標欄位規則 ({source_type_id})。跳過加總。")
+                 failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'無加總規則 ({source_type_id})'})
+                 continue
 
-            data_positions_wide = pd.pivot_table(
-                data_positions_long,
-                index=date_col_actual_for_pivot, # 使用重置索引後的日期列名
-                columns=actual_ts_col,
-                values=actual_val_col,
-                aggfunc='mean' # 理論上已處理重複，但保留以防萬一
-            )
-            logger.debug(f"    寬格式轉換成功 ({len(data_positions_wide)} 行 x {len(data_positions_wide.columns)} 欄)。")
+            actual_cols_in_df_to_sum = [c for c in target_cols_list_for_sum if c in data_positions_wide.columns]
 
-            if not data_positions_wide.empty:
-                target_cols_to_sum = []; source_type_name = "未知"
-                # 根據 URL 中的關鍵字判斷文件類型並獲取加總欄位列表
-                if 'SBN' in url.upper(): # Standard SBN file
-                     source_type_name = "SBN"
-                     target_cols_to_sum = [c for c in data_positions_wide.columns if isinstance(c, str) and c.upper().startswith('PDPOSGSC-')]
-                elif 'SBP2013' in url.upper():
-                     source_type_name = "SBP2013"; target_cols_to_sum = sbp_cols_config.get('sbp2013_cols_to_sum', [])
-                elif 'SBP2001' in url.upper():
-                     source_type_name = "SBP2001"; target_cols_to_sum = sbp_cols_config.get('sbp2001_cols_to_sum', [])
+            if not actual_cols_in_df_to_sum:
+                 logger.warning(f"文件 {file_source_name}: 配置的目標欄位 ({source_type_id}) 在數據中均未找到。跳過加總。")
+                 failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'目標欄位未找到 ({source_type_id})'})
+                 continue
 
-                if not target_cols_to_sum:
-                     logger.warning(f"    文件 {file_source_name} ({source_type_name}): 未找到用於加總的目標欄位規則或配置。跳過加總。")
-                     continue
+            if len(actual_cols_in_df_to_sum) < len(target_cols_list_for_sum):
+                 missing_cols_list = set(target_cols_list_for_sum) - set(actual_cols_in_df_to_sum)
+                 logger.warning(f"文件 {file_source_name}: 部分目標欄位 ({source_type_id}) 未找到: {missing_cols_list}")
 
-                actual_cols_present_for_sum = [c for c in target_cols_to_sum if c in data_positions_wide.columns]
-                if not actual_cols_present_for_sum:
-                     logger.warning(f"    文件 {file_source_name} ({source_type_name}): 預期加總的目標欄位均未在文件中找到。跳過加總。")
-                     continue
-                if len(actual_cols_present_for_sum) < len(target_cols_to_sum):
-                    missing_cols_for_sum = set(target_cols_to_sum) - set(actual_cols_present_for_sum)
-                    logger.warning(f"    文件 {file_source_name} ({source_type_name}): 部分目標欄位未找到: {missing_cols_for_sum}")
+            logger.info(f"文件 {file_source_name}: 正在加總 {len(actual_cols_in_df_to_sum)} 個欄位 ({source_type_id}, 單位: 百萬美元)...")
+            try:
+                for col_name in actual_cols_in_df_to_sum: # 確保數值類型
+                    data_positions_wide[col_name] = pd.to_numeric(data_positions_wide[col_name], errors='coerce')
 
-                logger.debug(f"    正在加總 {len(actual_cols_present_for_sum)} 個欄位 ({source_type_name}, 單位: 百萬美元)...")
-                # 確保參與加總的列是數值類型
-                for col_to_convert in actual_cols_present_for_sum:
-                    data_positions_wide[col_to_convert] = pd.to_numeric(data_positions_wide[col_to_convert], errors='coerce')
+                daily_total_millions_series = data_positions_wide[actual_cols_in_df_to_sum].sum(axis=1, skipna=True)
+                daily_total_millions_series = daily_total_millions_series.dropna()
+                daily_total_millions_series = daily_total_millions_series[daily_total_millions_series != 0] # 移除0值
 
-                daily_total_millions = data_positions_wide[actual_cols_present_for_sum].sum(axis=1, skipna=True)
-                daily_total_millions = daily_total_millions.dropna() # 移除加總結果為 NaN 的行
-                daily_total_millions = daily_total_millions[daily_total_millions != 0] # 移除加總結果為 0 的行
-
-                if not daily_total_millions.empty:
-                     all_positions_data.append(daily_total_millions)
-                     logger.info(f"    文件 {file_source_name} ({source_type_name}) 成功處理並加總，獲得 {len(daily_total_millions)} 筆有效數據。")
+                if not daily_total_millions_series.empty:
+                     all_positions_data.append(daily_total_millions_series)
+                     processed_files_count += 1
+                     logger.info(f"文件 {file_source_name}: 成功加總並清理，獲得 {len(daily_total_millions_series)} 筆數據。")
                 else:
-                     logger.warning(f"    文件 {file_source_name} ({source_type_name}): 加總後未能計算出有效的非零數據。")
-        except requests.exceptions.RequestException as e_req_ny:
-            logger.error(f"    文件 {file_source_name}: 下載失敗: {e_req_ny}")
-        except Exception as e_file_ny:
-            logger.error(f"    文件 {file_source_name}: 處理時發生未預期錯誤: {e_file_ny}", exc_info=True)
+                     logger.warning(f"文件 {file_source_name}: 加總後未能計算出有效的非零數據。")
+                     failed_files_info.append({'file': file_source_name, 'url': url, 'reason': '加總後無有效數據'})
+            except Exception as e_sum:
+                logger.error(f"文件 {file_source_name}: 加總欄位時出錯: {e_sum}。跳過。", exc_info=True)
+                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'加總失敗: {e_sum}'})
+                continue
 
+        except requests.exceptions.RequestException as e_req:
+            logger.error(f"文件 {file_source_name}: 下載失敗: {e_req}。跳過。", exc_info=True)
+            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'下載失敗: {e_req}'})
+        except pd.errors.EmptyDataError:
+            logger.warning(f"文件 {file_source_name}: Excel 文件為空或無數據可讀。跳過。")
+            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': 'Excel文件為空'})
+        except ValueError as e_val:
+            logger.warning(f"文件 {file_source_name}: 處理時發生數值或格式錯誤: {e_val}。跳過。")
+            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'數值/格式錯誤: {e_val}'})
+        except Exception as e_file:
+            logger.error(f"文件 {file_source_name}: 處理時發生未預期錯誤: {e_file}。跳過。", exc_info=True)
+            failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'未知處理錯誤: {e_file}'})
+
+    logger.info(f"NY Fed 文件處理循環結束。成功處理 {processed_files_count}/{len(ny_fed_positions_urls)} 個文件。")
+    if failed_files_info:
+        logger.warning(f"以下 NY Fed 文件處理失敗或被跳過:")
+        for item in failed_files_info: # 修正迭代變數名
+            logger.warning(f"  - 文件: {item['file']}, URL: {item['url']}, 原因: {item['reason']}")
+
+
+    # --- 2. 合併所有文件的持有量數據 ---
     if not all_positions_data:
-        logger.warning("未能成功處理任何 NY Fed 持有量數據文件。")
-        return None # 或返回空的 Series
+        logger.warning("未能從任何 NY Fed 文件中成功提取持有量數據。返回空 Series。")
+        return pd.Series(dtype='float64', name='Total_Gross_Positions_Millions')
 
     try:
-        combined_positions = pd.concat(all_positions_data)
-        # 處理索引可能不是 DatetimeIndex 的情況 (雖然前面已盡力轉換)
-        if not isinstance(combined_positions.index, pd.DatetimeIndex):
-            combined_positions.index = pd.to_datetime(combined_positions.index, errors='coerce')
-            combined_positions = combined_positions.dropna(axis=0, subset=[combined_positions.index.name]) # 移除轉換失敗的
+        logger.info("正在合併所有成功處理的 NY Fed 文件數據...")
+        combined_positions_series = pd.concat(all_positions_data)
+        combined_positions_series = combined_positions_series.sort_index()
+        final_nyfed_series_result = combined_positions_series.groupby(level=0).last() # 保留重疊日期的最新值
+        final_nyfed_series_result.name = 'Total_Gross_Positions_Millions'
+        final_nyfed_series_result = final_nyfed_series_result.dropna()
+        final_nyfed_series_result = final_nyfed_series_result[final_nyfed_series_result != 0]
 
-        combined_positions = combined_positions.sort_index()
-        # 處理重疊日期，保留最後（通常是最新）的值
-        final_nyfed_series = combined_positions.groupby(level=0).last()
-        final_nyfed_series.name = 'Total_Gross_Positions_Millions' # 命名 Series
-
-        # 再次確保沒有 NaN 或 0
-        final_nyfed_series = final_nyfed_series.dropna()
-        final_nyfed_series = final_nyfed_series[final_nyfed_series != 0]
-
-        if not final_nyfed_series.empty:
-            logger.info(f"NY Fed 持有量數據合併完成，最終序列包含 {len(final_nyfed_series)} 筆數據 (從 {final_nyfed_series.index.min().date()} 到 {final_nyfed_series.index.max().date()})。")
-            return final_nyfed_series
+        if final_nyfed_series_result.empty:
+            logger.warning("合併所有 NY Fed 文件數據後，最終序列為空或全為零值。")
+            return pd.Series(dtype='float64', name='Total_Gross_Positions_Millions')
         else:
-            logger.warning("NY Fed 數據合併後，最終序列為空或全為零值。")
-            return None
-    except Exception as e_concat_ny:
-        logger.error(f"合併 NY Fed 持有量數據時出錯: {e_concat_ny}", exc_info=True)
-        return None
+            logger.info(f"NY Fed 持有量數據合併完成。最終序列包含 {len(final_nyfed_series_result)} 筆有效數據 "
+                        f"(從 {final_nyfed_series_result.index.min().strftime('%Y-%m-%d')} 到 {final_nyfed_series_result.index.max().strftime('%Y-%m-%d')})。")
+            return final_nyfed_series_result
+    except Exception as e_concat:
+        logger.error(f"合併 NY Fed 持有量數據時出錯: {e_concat}", exc_info=True)
+        return pd.Series(dtype='float64', name='Total_Gross_Positions_Millions')
 
 
 if __name__ == '__main__':

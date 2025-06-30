@@ -1,131 +1,14 @@
-# -*- coding: utf-8 -*-
-# 專案設定檔 (project_config.yaml)
-# 此處為預期結構的範例，實際值應由使用者提供或在 App 初始化時檢查/建立。
-
-# API 金鑰 (重要：此檔案應加入 .gitignore，避免金鑰洩漏)
-api_keys:
-  fred: "c85a224a0e0d72a7bccb471c0021eb7b" # 使用者提供的 FRED API 金鑰
-  # ny_fed: (NY Fed 通常不需要金鑰，但若有其他需金鑰的 API 可放此)
-  gemini: "AIzaSyCkb9yr6OQ69_CK6na9RuO_ZTwg1DVxzZ8" # 使用者提供的 Gemini API 金鑰
-
-# 預設日期範圍 (若事件觸發時未提供)
-default_date_range:
-  start_date: "2018-01-01" # 預設開始日期
-  # end_date: "today" # 特殊值 "today" 表示當前日期，或留空由程式處理
-
-# 數據獲取相關設定
 data_fetching:
   fred_series_map:
     SOFR: 'SOFR'
     DGS10: 'DGS10'
     DGS2: 'DGS2'
-    RRPONTSYD: 'RRP'       # Overnight Reverse Repurchase Agreements (RRP) - ID 確認有效
-    VIXCLS: 'VIX_FRED'     # CBOE Volatility Index (VIX) from FRED - ID 確認有效，用於 get_vix_index
-    WRESBAL: 'Reserves'  # Reserve Balances with Federal Reserve Banks (Weekly) - ID 確認有效
-    DTB3: 'DTB3'         # 3-Month Treasury Bill Secondary Market Rate - 用於無風險利率 (如果 TLT IV 方案保留)
-    # MOVEIX: 'MOVE_FRED' # ICE BofA MOVE Index - FRED上可能ID (需確認是否為官方或可靠第三方)
-  fred_move_ticker: 'MOVEIX' # 專門為 get_move_index 設定的 FRED MOVE ID (需確認其有效性)
-
+    RRP: 'RRPONTSYD'
+    VIX_FRED: 'VIXCLS'
+    Reserves: 'WRESBAL'
+    DTB3: 'DTB3'
+  fred_move_ticker: 'MOVEIX'
   yahoo_tickers_map:
-    '^MOVE': 'MOVE_Yahoo'      # Yahoo Finance MOVE Ticker, for get_move_index fallback
-    '^VIX': 'VIX_Yahoo'        # Yahoo Finance VIX Ticker, for get_vix_index fallback
-    'TLT': 'TLT_Close'         # TLT ETF Close price, for potential (abandoned) TLT IV calculation
-    # 'IEF': 'ETF_IEF_Price'   # 範例：其他可能感興趣的 ETF
-  ny_fed_positions_urls:
-    # 按照時間倒序排列，新的放前面，以便處理重疊數據時優先使用較新的文件定義
-    - "https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx"
-    - "https://markets.newyorkfed.org/api/pd/get/SBN2022/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx"
-    - "https://markets.newyorkfed.org/api/pd/get/SBN2015/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx"
-    - "https://markets.newyorkfed.org/api/pd/get/SBN2013/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx"
-    - "https://markets.newyorkfed.org/api/pd/get/SBP2013/timeseries/PDPUSGCS3LNOP_PDPUSGCS36NOP_PDPUSGCS611NOP_PDPUSGCSM11NOP.xlsx"
-    - "https://markets.newyorkfed.org/api/pd/get/SBP2001/timeseries/PDPUSGCS5LNOP_PDPUSGCS5MNOP.xlsx"
-  sbp_cols_config: # 用於 NY Fed SBP 檔案的加總欄位
-    sbp2013_cols_to_sum: ['PDPUSGCS3LNOP', 'PDPUSGCS36NOP', 'PDPUSGCS611NOP', 'PDPUSGCSM11NOP']
-    sbp2001_cols_to_sum: ['PDPUSGCS5LNOP', 'PDPUSGCS5MNOP']
-
-# 計算相關設定
-calculation_params:
-  rolling_window_days: 252
-  weights: # 壓力指數各成分權重
-    sofr_dev: 0.35      # SOFR 利率變動 (與均線的偏離程度)
-    spread_inv: 0.10    # 利差倒掛 (10Y-2Y 反轉)
-    gross_pos: 0.05     # 一級交易商總部位 (衡量風險胃納)
-    move: 0.25          # 債券市場波動率 (MOVE 指數)
-    vix: 0.15           # 股票市場波動率 (VIX 指數)
-    pos_res_ratio: 0.10 # 一級交易商持有量/總準備金比率 (條件性權重)
-  smoothing_window_stress_index: 5 # 壓力指數的移動平均平滑窗口
-  threshold_ratio_color: 90        # 持有/準備金比率圖表著色閾值，也用於壓力指數條件權重
-
-# 視覺化相關設定
-visualization_params:
-  # 時間序列圖 (plot_results_summary)
-  plots_config: # 控制顯示哪些子圖
-    SOFR: True
-    Spread: True
-    MOVE: True
-    VIX: True
-    DealerPos: True
-    Reserves: True
-    StressIndex: True
-    Ratio: True
-    MACD: True # 是否繪製 MACD 子圖
-    ETF: False # 是否繪製 ETF 子圖 (若為 True，需在 data_fetching.yahoo_tickers_map 中設定 ETF ticker)
-  chart_params: # 傳遞給繪圖函式的其他參數
-    vol_index_fetched_name: "^MOVE" # 波動率指數的顯示名稱 (若從 Yahoo 抓取)
-    vol_data_source: "Yahoo Finance"   # 波動率數據來源說明
-    threshold_high_stress_color: 55  # 壓力指數圖表中標示"升高"狀態的閾值
-    # highlight_events: # 可選，用於在圖表上標註歷史事件
-    #   '事件A': ['YYYY-MM-DD', 'YYYY-MM-DD']
-    #   '事件B': ['YYYY-MM-DD', 'YYYY-MM-DD']
-  # MACD 設定 (若 plots_config.MACD 為 True)
-  enable_macd_momentum_plot: True # 計算模組是否計算 MACD (與繪圖分開，但通常一致)
-  macd_params:
-    fast: 12
-    slow: 26
-    signal: 9
-  macd_colors:
-    blue: "#6495ED"  # 上升且為正
-    green: "#3CB371" # 上升且為負
-    red: "#B22222"   # 下降
-  # 長天期公債 ETF 設定 (若 plots_config.ETF 為 True)
-  enable_lt_bond_etf_plot: False # 計算模組是否處理 ETF (與繪圖分開)
-  lt_bond_etf_ticker: "TLT"    # 例如 TLT (需在 yahoo_tickers_map 中也配置)
-  # 儀表板 (plot_stress_gauge)
-  gauge_thresholds: # 用於儀表板顏色分類 (可與壓力指數圖的閾值不同)
-    high: 80
-    medium: 60
-    # low: (可選)
-  # 趨勢圖 (plot_stress_trend)
-  trend_plot_days: 60 # 近期趨勢圖顯示的天數
-  trend_thresholds: # 用於趨勢圖分段著色
-    high: 80     # 極高壓力閾值
-    medium: 60   # 高壓力閾值
-    low: 30      # 中等壓力閾值 (低於此為低壓力)
-    color_extreme: '#E74C3C' # 紅色
-    color_high: '#F1C40F'     # 黃色
-    color_medium: '#3498DB'   # 藍色
-    color_low: '#2ECC71'      # 綠色
-
-# 報告輸出相關設定
-report_output:
-  output_directory: "data_workspace/output/reports" # 相對於專案根目錄
-  # sub_directory_format: "%Y-%m-%d" # YYYY-MM-DD 格式的子目錄，或留空
-  report_filename_prefix: "dealer_stress_report"
-  # include_ai_analysis: True # 是否包含 AI 潤飾 (若為 True，需設定 Gemini API Key)
-
-# 其他應用程式特定設定
-# timezone: "Asia/Taipei" # 時區設定，若未提供則可能使用系統預設或 UTC
-# log_level: "INFO" # 日誌級別 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-
-# Gemini API 相關設定 (若啟用 AI 分析)
-gemini_config:
-  # model_name: "gemini-pro" # 使用的 Gemini 模型
-  # (其他 Gemini API 參數，如 temperature, top_p 等)
-  # safety_settings: # 可選的安全設定
-  #   HARASSMENT: "BLOCK_NONE"
-  #   HATE_SPEECH: "BLOCK_NONE"
-  #   SEXUALLY_EXPLICIT: "BLOCK_NONE"
-  #   DANGEROUS_CONTENT: "BLOCK_NONE"
-  prompt_sections: # 用於 AI 潤飾的報告區塊
-    - "市場意涵"
-    - "後市展望"
+    Volatility_Index: '^MOVE'
+    VIX: '^VIX'
+    TLT_Close: 'TLT'

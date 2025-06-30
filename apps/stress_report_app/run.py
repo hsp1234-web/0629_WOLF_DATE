@@ -13,12 +13,13 @@
 
 import yaml
 import pandas as pd
+import numpy as np # 確保導入 numpy
 from datetime import datetime, timedelta
 import os
 import logging
 from typing import Dict, Any
 
-# 假設本 App 的模組在 apps.21_generate_dealer_stress_report 路徑下
+# 假設本 App 的模組在 apps.stress_report_app 路徑下
 from .data_fetcher import (
     fetch_fred_data,
     fetch_yahoo_data,
@@ -186,35 +187,38 @@ def run_app(event_params: Dict[str, Any] = None):
 
     # --- 合併所有數據源 ---
     logger.info("--- 正在合併所有獲取的數據源 ---")
-    # 以業務日為基礎索引
     base_idx = pd.date_range(start=start_date_dt, end=end_date_dt, freq='B')
     merged_df = pd.DataFrame(index=base_idx)
 
     if fred_base_df is not None and not fred_base_df.empty:
         merged_df = merged_df.join(fred_base_df, how='left')
+
     if yahoo_other_df is not None and not yahoo_other_df.empty:
         merged_df = merged_df.join(yahoo_other_df, how='left')
 
     if move_series is not None and not move_series.empty:
-        # MOVE series 可能是日頻，需對齊業務日
-        merged_df['MOVE_Index'] = move_series.reindex(base_idx, method='ffill')
+        merged_df['Volatility_Index'] = move_series.reindex(base_idx, method='ffill')
     else:
-        merged_df['MOVE_Index'] = np.nan
-        logger.warning("MOVE 指數數據最終未能獲取，將以 NaN 填充。")
+        merged_df['Volatility_Index'] = np.nan
+        logger.warning("MOVE 指數數據最終未能獲取，將以 NaN 填充 'Volatility_Index'。")
 
     if vix_series is not None and not vix_series.empty:
-        # VIX series 可能是日頻，需對齊業務日
-        merged_df['VIX_Index'] = vix_series.reindex(base_idx, method='ffill')
+        merged_df['VIX'] = vix_series.reindex(base_idx, method='ffill')
     else:
-        merged_df['VIX_Index'] = np.nan
-        logger.warning("VIX 指數數據最終未能獲取，將以 NaN 填充。")
+        merged_df['VIX'] = np.nan
+        logger.warning("VIX 指數數據最終未能獲取，將以 NaN 填充 'VIX'。")
 
     if nyfed_series is not None and not nyfed_series.empty:
-        nyfed_df_temp = nyfed_series.to_frame().reindex(base_idx, method='ffill')
-        merged_df = merged_df.join(nyfed_df_temp, how='left') # 已命名為 Total_Gross_Positions_Millions
+        nyfed_df_temp = nyfed_series.to_frame()
+        merged_df = merged_df.join(nyfed_df_temp, how='left')
+        if 'Total_Gross_Positions_Millions' in merged_df.columns:
+            merged_df['Total_Gross_Positions_Millions'].ffill(inplace=True)
+    else:
+        merged_df['Total_Gross_Positions_Millions'] = np.nan
+        logger.warning("NY Fed 持有量數據未能獲取，將以 NaN 填充 'Total_Gross_Positions_Millions'。")
 
     logger.info(f"數據合併完成。合併後 DataFrame 維度: {merged_df.shape}")
-    if merged_df.isna().all(axis=None): # 檢查是否所有值都是 NaN
+    if merged_df.isna().all(axis=None):
         logger.critical("CRITICAL: 所有數據源獲取失敗或合併後數據全為 NaN，無法繼續生成報告。")
         return
 
