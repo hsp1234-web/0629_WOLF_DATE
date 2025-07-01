@@ -115,7 +115,9 @@ def get_fred_base_data(
     參考 `一級交易pro.py` (Cell 4) 邏輯。
     """
     current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
-    series_map = config.get('data_fetching', {}).get('fred_series_map', {})
+    # config 參數本身就是 data_fetching_specific_config_dict，其中直接包含 fred_series_map
+    series_map = config.get('fred_series_map', {})
+    current_logger.info(f"DEBUG: FRED series_map from config: {series_map}") # 添加調試日誌
     current_logger.info(f"開始從 FRED 獲取 {len(series_map)} 個基礎經濟序列 (從 {start_date_dt.strftime('%Y-%m-%d')} 到 {end_date_dt.strftime('%Y-%m-%d')})...")
 
     fred_data_temp = {}
@@ -182,7 +184,9 @@ def get_yahoo_other_data(
     參考 `一級交易pro.py` (Cell 5) 邏輯。
     """
     current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
-    tickers_map = config.get('data_fetching', {}).get('yahoo_tickers_map', {})
+    # config 參數本身就是 data_fetching_specific_config_dict
+    tickers_map = config.get('yahoo_tickers_map', {})
+    current_logger.info(f"DEBUG: Yahoo tickers_map from config: {tickers_map}") # 添加調試日誌
     # 過濾掉 MOVE 和 VIX，因為它們由專用函式處理
     other_tickers_map = {
         name: ticker
@@ -227,12 +231,15 @@ def get_move_index(
     參考 `一級交易pro.py` (Cell 5 for Yahoo, Cell 4 for FRED)。
     """
     current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
-    data_fetching_config = config.get('data_fetching', {})
+    # config 參數本身就是 data_fetching_specific_config_dict
+    data_fetching_config = config
+    current_logger.info(f"DEBUG: get_move_index received config: {config}") # 添加調試日誌
 
     # 主要來源：Yahoo Finance
     # 從 yahoo_tickers_map 找到 MOVE 對應的 ticker，預設為 "^MOVE"
     yahoo_move_ticker_name = None
     yahoo_move_ticker_symbol = "^MOVE" # Default
+    # 使用 .get() 避免因 yahoo_tickers_map 不存在而出錯 (雖然理論上 AppConfig 會保證其存在)
     for name, symbol in data_fetching_config.get('yahoo_tickers_map', {}).items():
         if symbol.upper() == '^MOVE':
             yahoo_move_ticker_name = name
@@ -285,11 +292,14 @@ def get_vix_index(
     參考 `一級交易pro.py` (Cell 4 for FRED, Cell 5 for Yahoo)。
     """
     current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
-    data_fetching_config = config.get('data_fetching', {})
+    # config 參數本身就是 data_fetching_specific_config_dict
+    data_fetching_config = config
+    current_logger.info(f"DEBUG: get_vix_index received config: {config}") # 添加調試日誌
 
     # 主要來源：FRED
     # 嘗試從 fred_series_map 獲取 VIX 對應的 FRED ID，預設為 'VIXCLS'
     fred_vix_id = 'VIXCLS' # Default
+    # 使用 .get() 避免因 fred_series_map 不存在而出錯
     for name, fred_id in data_fetching_config.get('fred_series_map', {}).items():
         if name.upper() == 'VIX_FRED' or name.upper() == 'VIXCLS': # 假設設定檔中可能有 VIX_FRED
             fred_vix_id = fred_id
@@ -382,43 +392,90 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
             excel_content = io.BytesIO(response_excel.content)
             current_logger.info(f"文件 {file_source_name}: 下載成功。")
 
-            current_logger.debug(f"文件 {file_source_name}: 正在解析 (嘗試自動檢測表頭)...")
-            header_row_detected = None
-            date_col_name_parsed = None
+            # --- 驗證下載內容 ---
+            content_type = response_excel.headers.get('Content-Type', '未知')
+            current_logger.info(f"文件 {file_source_name}: Content-Type: {content_type}")
+            try:
+                # 嘗試將前500字節解碼為UTF-8以供打印，如果失敗則打印原始字節串
+                peek_content = excel_content.getvalue()[:500]
+                current_logger.info(f"文件 {file_source_name}: 內容預覽 (前500字節):\n{peek_content.decode('utf-8', errors='replace')}")
+            except Exception as e_peek:
+                current_logger.warning(f"文件 {file_source_name}: 預覽內容解碼失敗: {e_peek}. 原始字節串: {peek_content}")
+            excel_content.seek(0) # 確保預覽後重置指針以便後續讀取
+            # --- 驗證結束 ---
+
+            current_logger.debug(f"文件 {file_source_name}: 正在解析...")
             data_positions_long = None
-            possible_headers = [3, 4, 0]
+            header_to_use = None
+            # 根據 '一級交易pro.py' 的經驗，針對性設定 header
+            if "sbn" in url_str.lower(): # SOMA Holdings Net (SBN)
+                header_to_use = 3
+                current_logger.info(f"檢測到 SBN 類型檔案，嘗試使用 header={header_to_use} (0-indexed)。")
+            elif "sbp" in url_str.lower(): # Securities Held Outright by Primary Dealers (SBP)
+                header_to_use = 4 # SBP 通常 header=4，但具體需確認
+                current_logger.info(f"檢測到 SBP 類型檔案，嘗試使用 header={header_to_use} (0-indexed)。")
+            # 可以為其他已知的 NY Fed Excel 格式添加更多 elif 條件
 
-            for h_val in possible_headers:
+            if header_to_use is not None:
                 try:
-                    df_peek = pd.read_excel(excel_content, header=h_val, nrows=5, engine='openpyxl')
-                    excel_content.seek(0)
-                    cols_lower = [str(c).lower() for c in df_peek.columns]
-                    ts_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['time series', 'series name']), None)
-                    val_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['value (millions)', 'value']), None)
-                    date_col_cand_for_idx = None
-                    if len(df_peek.columns) > 0:
-                        first_col_name = df_peek.columns[0]
-                        if 'effective date' in cols_lower:
-                            date_col_cand_for_idx = df_peek.columns[cols_lower.index('effective date')]
-                        elif not pd.to_datetime(df_peek.iloc[:, 0], errors='coerce').isna().all():
-                            date_col_cand_for_idx = first_col_name
+                    # 假設日期通常是第一列，並且是索引
+                    # 嘗試直接讀取，如果失敗，會在下面的通用 except 中捕獲
+                    data_positions_long = pd.read_excel(excel_content, header=header_to_use, index_col=0, parse_dates=True, engine='openpyxl')
+                    current_logger.info(f"文件 {file_source_name}: 使用 header={header_to_use} 嘗試讀取成功。")
+                    # 由於 index_col=0，日期列名就是索引名
+                    date_col_name_parsed = data_positions_long.index.name
+                    if date_col_name_parsed is None: # 如果索引沒有名字，嘗試獲取第一個欄位名作為日期列的代理
+                        df_peek_cols = pd.read_excel(excel_content, header=header_to_use, nrows=0, engine='openpyxl').columns
+                        if len(df_peek_cols) > 0:
+                             date_col_name_parsed = df_peek_cols[0] # 通常是 'Effective Date' 或類似
+                        else:
+                             date_col_name_parsed = "Date" # 預設
+                        current_logger.info(f"索引無名稱，日期列名推斷為: '{date_col_name_parsed}'")
 
-                    if ts_col_cand and val_col_cand and date_col_cand_for_idx:
-                        header_row_detected = h_val
-                        date_col_name_parsed = date_col_cand_for_idx
-                        data_positions_long = pd.read_excel(excel_content, header=header_row_detected,
-                                                            index_col=date_col_name_parsed,
-                                                            parse_dates=True, engine='openpyxl')
-                        current_logger.info(f"文件 {file_source_name}: 檢測到有效表頭在第 {header_row_detected + 1} 行, 日期列: '{date_col_name_parsed}'.")
+                except Exception as e_read:
+                    current_logger.warning(f"文件 {file_source_name}: 使用指定 header={header_to_use} 讀取失敗: {e_read}。將嘗試通用解析。")
+                    excel_content.seek(0) # 重置以便後續嘗試
+                    data_positions_long = None # 確保置空
+
+            # 如果針對性讀取失敗，或者沒有匹配的類型，則退回之前的自動檢測（作為備案）
+            if data_positions_long is None:
+                current_logger.info(f"文件 {file_source_name}: 未進行針對性表頭讀取或讀取失敗，嘗試通用自動檢測表頭...")
+                header_row_detected = None
+                date_col_name_parsed = None
+                possible_headers = [3, 4, 0, 1, 2] # 擴大自動檢測範圍
+
+                for h_val in possible_headers:
+                    try:
+                        df_peek = pd.read_excel(excel_content, header=h_val, nrows=5, engine='openpyxl')
                         excel_content.seek(0)
-                        break
-                except Exception:
-                    excel_content.seek(0)
-                    continue
+                        cols_lower = [str(c).lower() for c in df_peek.columns]
+                        ts_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['time series', 'series name']), None)
+                        val_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['value (millions)', 'value', 'amount']), None) # 增加 'amount'
+                        date_col_cand_for_idx = None
+                        if len(df_peek.columns) > 0:
+                            first_col_name_str = str(df_peek.columns[0]).lower()
+                            if 'effective date' in cols_lower or 'date' in cols_lower:
+                                date_col_cand_for_idx = df_peek.columns[cols_lower.index('effective date' if 'effective date' in cols_lower else 'date')]
+                            elif not pd.to_datetime(df_peek.iloc[:, 0], errors='coerce').isna().all():
+                                date_col_cand_for_idx = df_peek.columns[0]
+
+                        if ts_col_cand and val_col_cand and date_col_cand_for_idx:
+                            header_row_detected = h_val
+                            date_col_name_parsed = date_col_cand_for_idx
+                            data_positions_long = pd.read_excel(excel_content, header=header_row_detected,
+                                                                index_col=date_col_name_parsed,
+                                                                parse_dates=True, engine='openpyxl')
+                            current_logger.info(f"文件 {file_source_name}: 自動檢測到有效表頭在第 {header_row_detected + 1} 行, 日期列: '{date_col_name_parsed}'.")
+                            excel_content.seek(0)
+                            break
+                    except Exception as e_auto:
+                        current_logger.debug(f"自動檢測 header={h_val} 失敗: {e_auto}")
+                        excel_content.seek(0)
+                        continue
 
             if data_positions_long is None:
-                current_logger.warning(f"文件 {file_source_name}: 無法自動檢測有效的表頭行或日期/數值列。跳過此文件。")
-                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': '解析失敗 (無法檢測表頭/關鍵列)'})
+                current_logger.warning(f"文件 {file_source_name}: 所有嘗試均無法解析 Excel。跳過此文件。")
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': '解析失敗 (所有表頭嘗試均失敗)'})
                 continue
 
             current_logger.debug(f"文件 {file_source_name}: 正在清理長格式數據...")
@@ -432,7 +489,7 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
 
             if not actual_ts_col_final or not actual_val_col_final:
                 current_logger.warning(f"文件 {file_source_name}: 清理後仍缺少 'Time Series' 或 'Value' 欄位。跳過。")
-                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': "缺少 'Time Series' 或 'Value' 欄位"})
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': "缺少 'Time Series' 或 'Value' 欄位"})
                 continue
 
             data_positions_long[actual_val_col_final] = pd.to_numeric(data_positions_long[actual_val_col_final], errors='coerce')
@@ -442,7 +499,7 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
 
             if data_positions_long.empty:
                 current_logger.warning(f"文件 {file_source_name}: 清理後無有效數據。跳過。")
-                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': '清理後無數據'})
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': '清理後無數據'})
                 continue
 
             current_logger.debug(f"文件 {file_source_name}: 正在轉換為寬格式...")
@@ -458,7 +515,7 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
                 current_logger.info(f"文件 {file_source_name}: 轉換寬格式成功 ({len(data_positions_wide)} 行 x {len(data_positions_wide.columns)} 欄)。")
             except Exception as e_pivot:
                 current_logger.error(f"文件 {file_source_name}: 轉換寬格式失敗: {e_pivot}。跳過。", exc_info=True)
-                failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'Pivot失敗: {e_pivot}'})
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'Pivot失敗: {e_pivot}'})
                 continue
 
             target_cols_list_for_sum = []
@@ -475,13 +532,13 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
 
             if not target_cols_list_for_sum:
                  current_logger.warning(f"文件 {file_source_name}: 未找到用於加總的目標欄位規則 ({source_type_id})。跳過加總。")
-                 failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'無加總規則 ({source_type_id})'})
+                 failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'無加總規則 ({source_type_id})'})
                  continue
 
             actual_cols_in_df_to_sum = [c for c in target_cols_list_for_sum if c in data_positions_wide.columns]
             if not actual_cols_in_df_to_sum:
                  current_logger.warning(f"文件 {file_source_name}: 配置的目標欄位 ({source_type_id}) 在數據中均未找到。跳過加總。")
-                 failed_files_info.append({'file': file_source_name, 'url': url, 'reason': f'目標欄位未找到 ({source_type_id})'})
+                 failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'目標欄位未找到 ({source_type_id})'})
                  continue
             if len(actual_cols_in_df_to_sum) < len(target_cols_list_for_sum):
                  missing_cols_list = set(target_cols_list_for_sum) - set(actual_cols_in_df_to_sum)
@@ -500,7 +557,7 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
                      current_logger.info(f"文件 {file_source_name}: 成功加總並清理，獲得 {len(daily_total_millions_series)} 筆數據。")
                 else:
                      current_logger.warning(f"文件 {file_source_name}: 加總後未能計算出有效的非零數據。")
-                     failed_files_info.append({'file': file_source_name, 'url': url, 'reason': '加總後無有效數據'})
+                     failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': '加總後無有效數據'})
             except Exception as e_sum:
                 current_logger.error(f"文件 {file_source_name}: 加總欄位時出錯: {e_sum}。跳過。", exc_info=True)
                 failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'加總失敗: {e_sum}'})
@@ -650,19 +707,15 @@ def fetch_all_data(
     if vix_series is not None and not vix_series.empty:
         vix_col_name = "VIX" # 預設
         # VIX 可能來自 FRED (VIX_FRED) 或 Yahoo (VIX)
-        # 優先使用 FRED map 中的名字，如果 VIX_FRED 存在
-        if hasattr(data_fetching_specific_config_model.fred_series_map, 'VIX_FRED') and \
-           data_fetching_specific_config_model.fred_series_map.VIX_FRED:
-            vix_col_name = "VIX_FRED" # 或者更通用的 "VIX"
-        else: # 否則檢查 Yahoo map
-            for name, symbol in data_fetching_specific_config_model.yahoo_tickers_map.model_dump().items():
-                if symbol.upper() == '^VIX':
-                    vix_col_name = name
-                    break
-        merged_df[vix_col_name] = vix_series.reindex(base_idx, method='ffill')
+        # calculator.py 期望的欄位名是 'VIX'
+        # get_vix_index 返回的 Series name 可能是 'VIX_Index' (來自FRED主要源) 或 'VIX_Yahoo' (來自Yahoo備援)
+        # 我們需要確保最終在 merged_df 中的欄位名是 'VIX'
+        vix_target_col_name = "VIX"
+        current_logger.info(f"DEBUG: VIX series name before rename: {vix_series.name}, attempting to put into column: {vix_target_col_name}")
+        merged_df[vix_target_col_name] = vix_series.reindex(base_idx, method='ffill')
     else:
-        vix_col_name = "VIX"
-        merged_df[vix_col_name] = np.nan
+        # 確保欄位存在，即使數據獲取失敗
+        merged_df["VIX"] = np.nan
 
     if nyfed_series is not None and not nyfed_series.empty:
         nyfed_df_temp = nyfed_series.to_frame(name='Total_Gross_Positions_Millions') # NY Fed Series 固定名稱

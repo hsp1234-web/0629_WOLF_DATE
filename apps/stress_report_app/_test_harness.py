@@ -89,12 +89,12 @@ def test_app_container_execution():
     cmd = [
         sys.executable,        # 使用當前 Python 解譯器
         app_path,              # 要執行的 app.py
-        '--start-date', '2022-01-01',
-        '--end-date', '2023-12-31',
-        '--output-format', 'test_run', # 使用不產生檔案的模式進行測試
+        '--start-date', '2022-01-01', # 使用較長的日期範圍
+        '--end-date', '2023-03-31',   # 使用較長的日期範圍
+        '--output-format', 'html',    # 修改為生成 HTML 報告
         '--config-path', config_file_path # 使用絕對路徑確保找到設定檔
-        # '--no-charts' # 根據需要添加，test_run 模式下圖表通常不重要
-        # '--no-text'   # test_run 模式下文字分析邏輯應執行
+        # '--no-charts' # 根據需要添加
+        # '--no-text'   # 根據需要添加
     ]
     print(f"  [*] 執行命令: {' '.join(cmd)}")
 
@@ -138,18 +138,17 @@ def test_app_container_execution():
         print(result.stderr if result.stderr.strip() else "<無標準錯誤輸出>")
 
         if result.returncode == 0:
-            # 額外檢查 STDOUT 是否包含成功訊息 (可選，但推薦)
-            # 例如，app.py 在 test_run 成功時應打印特定訊息
-            # 注意: 這裡的成功訊息應與 app.py 中定義的完全一致
-            expected_success_msg = "應用程式容器 'test_run' 模式執行成功！" # 從 app.py 複製
-            if expected_success_msg in result.stdout:
-                print("\n✅ [SOP v3.0] 應用程式容器化測試成功！")
-                print("   證明此 App 已具備標準接口，並可在任何環境下被正確調用。")
-                return True
-            else:
-                print("\n❌ [SOP v3.0] 測試失敗！應用程式返回碼為 0，但未檢測到預期的成功訊息。")
-                print(f"   應包含 \"{expected_success_msg}\"")
-                return False
+            # 當 output-format 為 html 時，主要驗證返回碼和之後的檔案生成
+            # 可以檢查 stdout 是否包含報告生成成功的訊息（如果 app.py 中有定義）
+            # 例如: expected_success_msg = "報告已成功生成於"
+            # if expected_success_msg in result.stdout:
+            print("\n✅ [SOP v3.0] 應用程式容器化測試執行成功 (返回碼 0)。")
+            print("   下一步將檢查報告檔案是否生成。")
+            return True
+            # else:
+            #     print("\n⚠️ [SOP v3.0] 應用程式返回碼為 0，但未檢測到預期的報告生成成功訊息。")
+            #     print(f"   請檢查 STDOUT 確認報告路徑。")
+            #     return True # 仍然返回 True，因為返回碼是0，檔案檢查是下一步
         else:
             print(f"\n❌ [SOP v3.0] 測試失敗！應用程式容器執行失敗！")
             print(f"   返回碼: {result.returncode}")
@@ -169,8 +168,172 @@ if __name__ == "__main__":
     # 執行測試函式
     test_successful = test_app_container_execution()
 
-    # 根據測試結果設定退出碼，方便 CI/CD 工具判斷
-    if test_successful:
-        sys.exit(0) # 成功
+# (所有 import 語句在檔案頂部)
+# ... (PROJECT_ROOT 設定代碼) ...
+# ... (test_app_container_execution 函數定義) ...
+
+def test_core_modules():
+    """
+    獨立測試 data_fetcher.py 和 calculator.py 的核心功能。
+    """
+    # 這些 import 對 test_core_modules 是局部的，或者可以移到檔案頂部如果它們也被其他地方使用
+    from datetime import datetime
+    import yaml
+    import pandas as pd
+    from apps.stress_report_app.schemas import AppConfig # 假設 AppConfig 已被正確導入
+    from apps.stress_report_app import data_fetcher, calculator # 假設這些模組已可導入
+    from src.utils.logger import setup_logger # 假設 setup_logger 已可導入
+
+    print(f"\n===== 🧪 開始執行核心模組測試 (data_fetcher & calculator) =====")
+    logger = setup_logger("CoreModulesTest", level="INFO")
+
+    # --- 準備參數 ---
+    start_date_str = "2022-01-01" # 修改開始日期以獲取更多數據點
+    end_date_str = "2023-03-31"   # 範例日期
+    try:
+        start_date_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+        logger.info(f"測試日期範圍: {start_date_str} 至 {end_date_str}")
+    except ValueError:
+        logger.error(f"錯誤：測試用的日期格式不正確 ({start_date_str}, {end_date_str})。請使用 YYYY-MM-DD。測試中止。")
+        return False
+
+    config_path = os.path.join(PROJECT_ROOT, 'config/project_config.yaml')
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            raw_config = yaml.safe_load(f)
+        app_config = AppConfig(**raw_config)
+        logger.info(f"設定檔 '{config_path}' 載入並驗證成功。")
+    except Exception as e:
+        logger.error(f"錯誤：載入或驗證設定檔 '{config_path}' 失敗: {e}。測試中止。", exc_info=True)
+        return False
+
+    fred_api_key = os.getenv('API_KEY_FRED')
+    if not fred_api_key:
+        logger.warning("警告：環境變數 'API_KEY_FRED' 未設定。FRED 數據抓取將使用虛假金鑰，預期會失敗或返回空數據。")
+        fred_api_key = "TEST_ONLY_NO_REAL_CALLS_CORE_MODULE_TEST"
     else:
-        sys.exit(1) # 失敗
+        logger.info("成功讀取 'API_KEY_FRED' 環境變數。")
+
+    # --- 測試 data_fetcher.fetch_all_data ---
+    logger.info("\n--- [測試 Data Fetcher] ---")
+    fetched_data = None # 初始化
+    data_fetcher_success = False
+    try:
+        fetched_data = data_fetcher.fetch_all_data(
+            start_date_dt,
+            end_date_dt,
+            app_config,
+            fred_api_key,
+            logger_instance=logger
+        )
+        logger.info(f"data_fetcher.fetch_all_data 執行完畢。")
+        if fetched_data and hasattr(fetched_data, 'merged_df') and isinstance(fetched_data.merged_df, pd.DataFrame):
+            logger.info("返回的 fetched_data 物件有效，merged_df 是 DataFrame。")
+            logger.info(f"merged_df 維度: {fetched_data.merged_df.shape}")
+            if not fetched_data.merged_df.empty:
+                logger.info("merged_df 非空。部分欄位預覽 (前5行):")
+                print(fetched_data.merged_df.head().to_string())
+                non_empty_cols = fetched_data.merged_df.dropna(axis=1, how='all').columns
+                if not non_empty_cols.empty:
+                    logger.info(f"merged_df 中至少包含以下非空欄位: {list(non_empty_cols)}")
+                else:
+                    logger.warning("merged_df 中所有欄位都完全是 NaN。")
+            else:
+                logger.warning("merged_df 為空。")
+            data_fetcher_success = True # 標記成功
+        else:
+            logger.error("data_fetcher.fetch_all_data 返回無效或 merged_df 不是 DataFrame。")
+            # data_fetcher_success 保持 False
+
+    except Exception as e:
+        logger.error(f"執行 data_fetcher.fetch_all_data 時發生錯誤: {e}", exc_info=True)
+        # data_fetcher_success 保持 False
+
+    # --- 測試 calculator.calculate_all_indicators ---
+    logger.info("\n--- [測試 Calculator] ---")
+    calculator_success = False
+    if not data_fetcher_success:
+        logger.error("由於 data_fetcher 測試失敗或未返回有效數據，跳過 calculator 測試。")
+    elif fetched_data is None or not hasattr(fetched_data, 'merged_df') or not isinstance(fetched_data.merged_df, pd.DataFrame):
+        logger.error("fetched_data.merged_df 不是有效的 DataFrame (可能為 None 或類型錯誤)，無法傳遞給 calculator。")
+    else:
+        try:
+            calculated_data = calculator.calculate_all_indicators(fetched_data, logger_instance=logger)
+            logger.info(f"calculator.calculate_all_indicators 執行完畢。")
+            if calculated_data and hasattr(calculated_data, 'final_df') and isinstance(calculated_data.final_df, pd.DataFrame):
+                logger.info("返回的 calculated_data 物件有效，final_df 是 DataFrame。")
+                logger.info(f"final_df 維度: {calculated_data.final_df.shape}")
+                if not calculated_data.final_df.empty:
+                    logger.info("final_df 非空。部分欄位預覽 (前5行):")
+                    print(calculated_data.final_df.head().to_string())
+                    expected_cols = ['Spread_10Y2Y', 'SOFR_Dev', 'Dealer_Stress_Index']
+                    missing_cols = [col for col in expected_cols if col not in calculated_data.final_df.columns]
+                    if not missing_cols:
+                        logger.info(f"預期的計算欄位 {expected_cols} 均存在於 final_df。")
+                    else:
+                        logger.warning(f"部分預期計算欄位缺失: {missing_cols}。")
+                else:
+                    logger.warning("final_df 為空。")
+                calculator_success = True # 標記成功
+            else:
+                logger.error("calculator.calculate_all_indicators 返回無效或 final_df 不是 DataFrame。")
+                # calculator_success 保持 False
+
+        except Exception as e:
+            logger.error(f"執行 calculator.calculate_all_indicators 時發生錯誤: {e}", exc_info=True)
+            # calculator_success 保持 False
+
+    if data_fetcher_success and calculator_success:
+        logger.info("\n✅ 核心模組 (data_fetcher & calculator) 測試執行完畢。請檢查日誌。")
+        return True
+    else:
+        logger.error("\n❌ 核心模組測試失敗或部分失敗。請檢查上述日誌。")
+        return False
+
+if __name__ == "__main__":
+    # 確保所有頂層需要的導入都在這裡或更早
+    # from datetime import datetime # 已在 test_core_modules 內部
+    # import yaml # 已在 test_core_modules 內部
+    # import pandas as pd # 已在 test_core_modules 內部
+    # from apps.stress_report_app.schemas import AppConfig # 已在 test_core_modules 內部
+    # from apps.stress_report_app import data_fetcher, calculator # 已在 test_core_modules 內部
+    # from src.utils.logger import setup_logger # 已在 test_core_modules 內部
+
+    # 決定要執行哪個測試
+    test_to_run = test_app_container_execution  # 改回執行容器化流程測試
+    # test_to_run = test_core_modules
+
+    successful = test_to_run()
+
+    # 在 test_app_container_execution 成功後，檢查報告是否生成
+    if successful and test_to_run == test_app_container_execution:
+        # 假設 app.py 會將報告輸出到 data_workspace/output/reports/ stress_report_YYYY-MM-DD_HHMMSS_html/stress_report_YYYY-MM-DD_HHMMSS.html
+        # 我們需要找到最新的報告目錄
+        reports_base_dir = os.path.join(PROJECT_ROOT, "data_workspace", "output", "reports")
+        if os.path.isdir(reports_base_dir):
+            all_report_dirs = [d for d in os.listdir(reports_base_dir) if os.path.isdir(os.path.join(reports_base_dir, d)) and d.startswith("stress_report_")]
+            if all_report_dirs:
+                all_report_dirs.sort()
+                latest_report_dir_name = all_report_dirs[-1]
+                # 預期檔名與目錄名中的時間戳和格式部分一致
+                # e.g., dir: stress_report_2023-10-27_103000_html -> file: stress_report_2023-10-27_103000.html
+                expected_report_filename = latest_report_dir_name.replace("_html", ".html")
+                report_file_path = os.path.join(reports_base_dir, latest_report_dir_name, expected_report_filename)
+
+                if os.path.exists(report_file_path):
+                    print(f"✅ 報告檔案已成功生成於: {report_file_path}")
+                else:
+                    print(f"❌ 報告檔案未找到於預期路徑: {report_file_path}")
+                    successful = False # 標記為失敗如果報告未生成
+            else:
+                print(f"❌ 在 '{reports_base_dir}' 中未找到任何 'stress_report_' 開頭的報告目錄。")
+                successful = False
+        else:
+            print(f"❌ 報告基礎目錄 '{reports_base_dir}' 不存在。")
+            successful = False
+
+    if successful:
+        sys.exit(0)
+    else:
+        sys.exit(1)

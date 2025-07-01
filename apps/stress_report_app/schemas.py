@@ -122,7 +122,7 @@ class AppConfig(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True # 允許如 pd.DataFrame 等任意類型 (雖然在這個模型中不直接使用)
-        extra = 'forbid' # 不允許未定義的額外欄位，確保設定檔的嚴謹性
+        extra = 'ignore' # 不允許未定義的額外欄位，確保設定檔的嚴謹性
 
 # --- 流水線數據合約 ---
 

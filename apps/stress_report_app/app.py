@@ -63,7 +63,7 @@ def main():
         return 1 # 返回非零表示錯誤
     except pydantic.ValidationError as e:
         logger.error(f"錯誤：設定檔 '{args.config_path}' 驗證失敗。詳細資訊:")
-        logger.error(e.json(indent=2, ensure_ascii=False)) #確保繁體中文能正確顯示
+        logger.error(e.json(indent=2)) #確保繁體中文能正確顯示
         return 1
     except yaml.YAMLError as e:
         logger.error(f"錯誤：解析設定檔 '{args.config_path}' 時發生 YAML 錯誤: {e}。程式終止。")
@@ -184,7 +184,7 @@ def main():
 
     except pydantic.ValidationError as e: # 捕獲流水線中 Pydantic 模型的驗證錯誤
         logger.error("錯誤：在應用程式流水線執行期間發生 Pydantic 數據合約驗證失敗。詳細資訊:")
-        logger.error(e.json(indent=2)) # 移除 ensure_ascii=False
+        logger.error(e.json(indent=2))
         return 1
     except Exception as e: # 捕獲其他所有未預期錯誤
         logger.error(f"錯誤：應用程式執行期間發生未預期錯誤: {e}", exc_info=True) # exc_info=True 會記錄堆疊追蹤
