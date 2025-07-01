@@ -6,220 +6,214 @@ yfinance 客戶端模組。
 import yfinance as yf
 import pandas as pd
 import time
-from datetime import datetime, timedelta
+# from datetime import datetime, timedelta # 在這個版本中不再直接使用
 import os
 
 class YFinanceClient:
     """
     一個用於與 yfinance API 互動的客戶端。
 
-    提供方法來抓取市場數據，並內建快取機制以減少重複的 API 請求
-    及基本的錯誤處理與重試邏輯。
+    提供方法來抓取市場數據，並實現自適應區間降級策略。
     """
-    def __init__(self, cache_dir="data_workspace/cache/yfinance", cache_expiry_hours=1):
+    def __init__(self, cache_dir="data_workspace/cache/yfinance"):
         """
         初始化 YFinanceClient。
 
         Args:
             cache_dir (str): 用於儲存快取檔案的目錄路徑。
-            cache_expiry_hours (int): 快取檔案的有效時長（小時）。
-                                      若快取檔案超過此時長，將重新從 API 抓取。
+                             (注意: 目前版本的快取邏輯尚未完全整合到自適應方法中)
         """
         self.cache_dir = cache_dir
-        self.cache_expiry_hours = cache_expiry_hours
         os.makedirs(self.cache_dir, exist_ok=True)
-        print(f"INFO: YFinanceClient 初始化完畢，快取目錄: {self.cache_dir}, 快取有效時長: {cache_expiry_hours} 小時")
+        # 定義區間降級鏈
+        self.FALLBACK_INTERVALS = ['1m', '5m', '15m', '30m', '1h', '1d', '1wk', '1mo']
+        print(f"INFO: YFinanceClient 初始化完畢，快取目錄: {self.cache_dir}")
+        print(f"INFO: 區間降級鏈: {self.FALLBACK_INTERVALS}")
+
 
     def _get_period_for_interval(self, interval: str) -> str:
         """
         根據 yfinance API 的限制，為指定的數據間隔返回合適的 `period` 參數。
-
-        yfinance 對於不同顆粒度的數據有不同的最大查詢範圍限制：
-        - 分鐘線 (e.g., 1m, 5m): 通常最多只能抓取最近 7 天的數據。
-                             若需要更長時間範圍，yfinance 限制 period 最大為 "60d" 但 interval 不能低於 "1m"。
-                             更精確地說，1-29 分鐘的 interval，period 最大為 "7d"。30分鐘以上到90分鐘的 interval，period 最大為 "60d"。
-        - 小時線 (e.g., 1h): 通常最多能抓取最近 730 天 (約 2 年) 的數據，但 "60d" 通常是個安全的選擇。
-        - 日線 (e.g., 1d): 可以抓取更長期的歷史數據。
-
-        Args:
-            interval (str): 數據的時間間隔 (例如 "1m", "5m", "1h", "1d")。
-
-        Returns:
-            str: 對應於 yfinance API 的 `period` 參數。
+        此版本根據草案 v10.2 進行調整。
         """
-        if "m" in interval: # 分鐘線
-            minutes = int(interval[:-1])
-            if minutes < 30:
-                return "7d" # yfinance 限制 1m-29m interval 最多抓 7 天
-            else: # 30m, 60m (視為 1h), 90m
-                return "60d" # yfinance 限制 30m-90m interval 最多抓 60 天
-        elif "h" in interval: # 小時線
-            return "730d" # yfinance 限制 1h interval 最多抓 730 天
-        return "max" # 日線或其他，抓取所有可用數據
+        if "m" in interval: # 分鐘線 (1m, 5m, 15m, 30m)
+            # yfinance 限制 1m-29m interval 最多抓 7 天, 30m-90m interval 最多抓 60 天
+            # 為簡化並確保數據量，統一分鐘線的 period 為 7d，若需要更長可調整
+            return "7d"
+        elif "h" in interval: # 小時線 (1h)
+            # yfinance 限制 1h interval 最多抓 730 天， "60d" 是一個較為常見的選擇
+            return "60d"
+        elif "d" in interval or "wk" in interval: # 日線或週線
+            return "1y" # 抓取一年數據
+        elif "mo" in interval: # 月線
+            return "5y" # 抓取五年數據
+        return "max" # 其他未知情況，預設抓取所有可用數據
 
-    def _is_cache_valid(self, cache_file: str) -> bool:
+    def fetch_data_adaptively(self, ticker: str, start_interval: str = '1m') -> tuple[pd.DataFrame | None, str | None]:
         """
+        自適應區間降級的數據抓取方法。
+        會從指定的 start_interval 開始嘗試，如果失敗則自動降級。
+        返回一個包含 (數據 DataFrame, 最終成功區間 string) 的元組。
+        如果所有嘗試都失敗，則返回 (None, None)。
+        """
+        try:
+            # 找到起始區間在降級鏈中的位置
+            start_index = self.FALLBACK_INTERVALS.index(start_interval)
+        except ValueError:
+            print(f"錯誤：起始區間 '{start_interval}' 不在預定義的降級鏈 {self.FALLBACK_INTERVALS} 中。")
+            return None, None
+
+        # 從起始位置開始遍歷降級鏈
+        for interval_to_try in self.FALLBACK_INTERVALS[start_index:]:
+            period = self._get_period_for_interval(interval_to_try)
+            print(f"INFO: 正在嘗試抓取 {ticker} (Period: {period}, Interval: {interval_to_try})...")
+
+            try:
+                stock = yf.Ticker(ticker)
+                # 抓取歷史數據，auto_adjust=True 會自動調整 OHLC 價格，移除 'Adjusted Close'
+                data = stock.history(period=period, interval=interval_to_try, auto_adjust=True)
+
+                # 核心判斷：如果成功獲取到數據
+                if data is not None and not data.empty:
+                    print(f"成功：在區間 '{interval_to_try}' 為 {ticker} 獲取到 {len(data)} 筆數據。")
+
+                    # 欄位名稱統一小寫
+                    data.columns = [col.lower() for col in data.columns]
+
+                    # 確保 'volume' 欄位存在，若不存在則填 0 (例如指數可能沒有成交量)
+                    if 'volume' not in data.columns:
+                        data['volume'] = 0
+                    data['volume'] = data['volume'].fillna(0).astype('int64')
+
+                    # 確保 DatetimeIndex 是 UTC (yfinance 通常返回 UTC，但最好明確指定)
+                    if data.index.tz is None:
+                         data.index = data.index.tz_localize('UTC')
+                    else:
+                         data.index = data.index.tz_convert('UTC')
+
+                    # TODO: 在此可以加入寫入快取的邏輯 (例如使用 cache_file_name 和 self.cache_dir)
+                    # cache_file_name = f"{ticker.replace('^', '')}_{interval_to_try}.parquet"
+                    # cache_file = os.path.join(self.cache_dir, cache_file_name)
+                    # data.to_parquet(cache_file)
+                    # print(f"INFO: 數據已快取至 {cache_file}")
+
+                    return data, interval_to_try
+
+                # 如果返回空數據，則繼續下一個循環
+                print(f"警告：標的 {ticker} 在區間 '{interval_to_try}' (Period: {period}) 未找到數據，嘗試下一個區間...")
+
+            except Exception as e:
+                # 捕捉 yfinance 可能拋出的各種錯誤，包括無數據的特定錯誤
+                print(f"警告：為 {ticker} 嘗試區間 '{interval_to_try}' (Period: {period}) 時發生錯誤: {e}，嘗試下一個區間...")
+
+            # 在每次嘗試之間可以加入一個微小的延遲，避免過於頻繁的請求
+            time.sleep(0.5)
+
+        # 如果所有區間都嘗試完畢仍然失敗
+        print(f"錯誤：對於標的 {ticker} (從 {start_interval} 開始)，所有降級區間 {self.FALLBACK_INTERVALS[start_index:]} 均無法獲取數據。")
+        return None, None
+
+    def _is_cache_valid(self, cache_file: str, cache_expiry_hours: int = 1) -> bool:
+        """
+        (輔助方法，目前未在 fetch_data_adaptively 中直接使用，但可供未來快取整合)
         檢查快取檔案是否存在且仍然有效（未過期）。
-
-        Args:
-            cache_file (str): 快取檔案的路徑。
-
-        Returns:
-            bool: 如果快取有效則返回 True，否則 False。
         """
         if not os.path.exists(cache_file):
             return False
-
-        # 檢查檔案修改時間是否在有效期內
         file_mod_time = os.path.getmtime(cache_file)
-        if (time.time() - file_mod_time) / 3600 < self.cache_expiry_hours:
+        if (time.time() - file_mod_time) / 3600 < cache_expiry_hours:
             return True
-
         print(f"INFO: 快取檔案 {cache_file} 已過期。")
         return False
 
     def fetch_data(self, ticker: str, interval: str, retries: int = 3, delay: int = 5) -> pd.DataFrame | None:
         """
-        從 yfinance API 抓取指定股票代碼和時間間隔的市場數據。
-
-        此方法包含以下特性：
-        1.  **快取機制**：首先檢查本地快取，若有有效快取則直接讀取，避免重複 API 請求。
-        2.  **API 限制處理**：根據 `interval` 自動調整 `period` 以符合 yfinance 的限制。
-        3.  **錯誤重試**：若 API 請求失敗，會進行指數退避重試。
-        4.  **數據標準化**：欄位名稱統一為小寫。
-
-        Args:
-            ticker (str): 股票代碼 (例如 "AAPL", "^TWII")。
-            interval (str): 數據的時間間隔 (例如 "1m", "5m", "1h", "1d")。
-            retries (int): API 請求失敗時的最大重試次數。
-            delay (int): 重試之間的初始延遲秒數（會進行指數退避）。
-
-        Returns:
-            pd.DataFrame | None: 包含市場數據的 DataFrame (OHLCV)，
-                                 若抓取失敗或無數據則返回 None。
-                                 DataFrame 的 Index 為 DatetimeIndex (UTC)。
+        舊的 fetch_data 方法。
+        注意：此方法在新架構下可能被廢棄或重構。
+        目前的自適應邏輯在 fetch_data_adaptively 中實現。
+        這個舊方法暫時保留，但其快取和重試邏輯與 fetch_data_adaptively 中的不同。
         """
-        cache_file_name = f"{ticker.replace('^', '')}_{interval}.parquet" # 移除 ^ 以避免路徑問題
-        cache_file = os.path.join(self.cache_dir, cache_file_name)
+        print(f"警告: 正調用舊的 fetch_data 方法處理 {ticker} ({interval})。建議改用 fetch_data_adaptively。")
+        # 簡單地調用 yfinance，不包含複雜的快取或自適應邏輯
+        try:
+            stock_ticker = yf.Ticker(ticker)
+            period = self._get_period_for_interval(interval) # 使用更新後的 period 邏輯
+            data = stock_ticker.history(period=period, interval=interval, auto_adjust=True)
 
-        # 1. 檢查快取
-        if self._is_cache_valid(cache_file):
-            try:
-                print(f"INFO: 從快取讀取 {ticker} (間隔: {interval})...")
-                data = pd.read_parquet(cache_file)
-                # 確保快取數據的 index 是 DatetimeIndex
-                if not isinstance(data.index, pd.DatetimeIndex):
-                    data.index = pd.to_datetime(data.index)
-                # yfinance 返回的數據通常是 UTC
-                if data.index.tz is None:
-                     data.index = data.index.tz_localize('UTC')
-                else:
-                     data.index = data.index.tz_convert('UTC')
-                print(f"INFO: 成功從快取載入 {len(data)} 筆數據。")
-                return data
-            except Exception as e:
-                print(f"警告: 讀取快取檔案 {cache_file} 失敗: {e}。將嘗試從 API 重新抓取。")
+            if data.empty:
+                print(f"警告 (舊方法): {ticker} (間隔: {interval}) 在 yfinance 返回空數據。")
+                return None
 
-        # 2. API 請求與重試
-        period = self._get_period_for_interval(interval)
+            data.columns = [col.lower() for col in data.columns]
+            if 'volume' not in data.columns:
+                data['volume'] = 0
+            data['volume'] = data['volume'].fillna(0).astype('int64')
+            if data.index.tz is None:
+                data.index = data.index.tz_localize('UTC')
+            else:
+                data.index = data.index.tz_convert('UTC')
+            return data
+        except Exception as e:
+            print(f"錯誤 (舊方法): 抓取 {ticker} ({interval}) 失敗: {e}")
+            return None
 
-        for attempt in range(retries):
-            try:
-                print(f"INFO: 從 API (yfinance) 抓取 {ticker} (Period: {period}, Interval: {interval}, 嘗試 {attempt + 1}/{retries})...")
-
-                stock_ticker = yf.Ticker(ticker)
-                # 抓取歷史數據
-                data = stock_ticker.history(period=period, interval=interval, auto_adjust=True)
-
-                if data.empty:
-                    print(f"警告: 標的 {ticker} (間隔: {interval}) 在 yfinance 返回空數據。原因可能是：(1) 此標的 (如 ^VIX) 不提供此間隔的數據；(2) 該時段無交易；(3) 股票代碼錯誤或已下市。")
-                    # 存一個空的 DataFrame 到快取，避免短時間內重複查詢無效標的
-                    pd.DataFrame().to_parquet(cache_file)
-                    return None
-
-                # 欄位名稱統一小寫
-                data.columns = [col.lower() for col in data.columns]
-
-                # 確保 'volume' 欄位存在，若不存在則填 0 (例如指數可能沒有成交量)
-                if 'volume' not in data.columns:
-                    data['volume'] = 0
-                data['volume'] = data['volume'].fillna(0).astype('int64')
-
-
-                # 確保 DatetimeIndex 是 UTC
-                if data.index.tz is None:
-                     data.index = data.index.tz_localize('UTC')
-                else:
-                     data.index = data.index.tz_convert('UTC')
-
-                # 3. 成功後寫入快取
-                print(f"INFO: 成功從 API 抓取 {len(data)} 筆 {ticker} 數據，儲存至快取 {cache_file}...")
-                data.to_parquet(cache_file)
-                return data
-
-            except yf.shared.YFinanceException as yfe:
-                print(f"錯誤: yfinance 特定錯誤抓取 {ticker} 失敗 (嘗試 {attempt + 1}/{retries}): {yfe}")
-                # 特定錯誤可能不需要重試，例如 404 Not Found
-                if "No data found for ticker" in str(yfe) or "No price data found" in str(yfe):
-                    print(f"INFO: 標的 {ticker} 可能不存在或無數據，不再重試。")
-                    pd.DataFrame().to_parquet(cache_file) # 快取空結果
-                    return None
-                if attempt < retries - 1:
-                    current_delay = delay * (2 ** attempt)
-                    print(f"INFO: 等待 {current_delay} 秒後重試...")
-                    time.sleep(current_delay)
-                else:
-                    print(f"錯誤: 所有 {retries} 次重試均告失敗 (yfinance specific)。")
-                    return None
-            except Exception as e:
-                print(f"錯誤: 一般錯誤抓取 {ticker} 失敗 (嘗試 {attempt + 1}/{retries}): {e}")
-                if attempt < retries - 1:
-                    current_delay = delay * (2 ** attempt)
-                    print(f"INFO: 等待 {current_delay} 秒後重試...")
-                    time.sleep(current_delay)
-                else:
-                    print(f"錯誤: 所有 {retries} 次重試均告失敗。")
-                    return None
-        return None
 
 if __name__ == '__main__':
     # 簡易測試代碼
-    print("--- YFinanceClient 測試 ---")
-    client = YFinanceClient(cache_expiry_hours=0.01) # 設定短快取以利測試
+    print("--- YFinanceClient 測試 (自適應版本) ---")
+    # client = YFinanceClient(cache_expiry_hours=0.01) # cache_expiry_hours 不再是主要參數
+    client = YFinanceClient()
 
-    # 測試案例 1: 有效標的，分鐘線
-    print("\n--- 測試案例 1: AAPL 1m ---")
-    aapl_data = client.fetch_data("AAPL", "1m")
+    # 測試案例 1: 嘗試 '1m'，應該成功 (例如 AAPL 通常有 1m 數據)
+    print("\n--- 測試案例 1: AAPL, start_interval='1m' ---")
+    aapl_data, aapl_interval = client.fetch_data_adaptively("AAPL", start_interval='1m')
     if aapl_data is not None:
-        print(f"成功獲取 AAPL (1m)數據，共 {len(aapl_data)} 筆。")
+        print(f"成功獲取 AAPL 數據，最終區間: {aapl_interval}，共 {len(aapl_data)} 筆。")
         print(aapl_data.head())
-        print(aapl_data.info())
+        # print(aapl_data.info())
+    else:
+        print(f"未能獲取 AAPL 數據。")
 
-    # 測試案例 2: 有效標的，日線
-    print("\n--- 測試案例 2: ^TWII 1d ---")
-    twii_data = client.fetch_data("^TWII", "1d")
-    if twii_data is not None:
-        print(f"成功獲取 ^TWII (1d)數據，共 {len(twii_data)} 筆。")
-        print(twii_data.head())
+    # 測試案例 2: 嘗試 '^VIX'，'1m' 應該會失敗，然後降級
+    # 注意: ^VIX 可能在所有分鐘/小時級別都失敗，最終可能成功在 '1d'
+    print("\n--- 測試案例 2: ^VIX, start_interval='1m' (預期降級) ---")
+    vix_data, vix_interval = client.fetch_data_adaptively("^VIX", start_interval='1m')
+    if vix_data is not None:
+        print(f"成功獲取 ^VIX 數據，最終區間: {vix_interval}，共 {len(vix_data)} 筆。")
+        print(vix_data.head())
+    else:
+        print(f"未能獲取 ^VIX 數據。")
 
-    # 測試案例 3: 無效標的
-    print("\n--- 測試案例 3: FAKE_TICKER 1d ---")
-    fake_data = client.fetch_data("FAKE_TICKER_XYZ", "1d")
+    # 測試案例 3: 無效標的，所有區間都應失敗
+    print("\n--- 測試案例 3: FAKE_TICKER_XYZ, start_interval='1m' (預期全部失敗) ---")
+    fake_data, fake_interval = client.fetch_data_adaptively("FAKE_TICKER_XYZ", start_interval='1m')
     if fake_data is None:
-        print("成功處理無效標的 FAKE_TICKER_XYZ。")
+        print("成功處理無效標的 FAKE_TICKER_XYZ，未能獲取數據 (符合預期)。")
+    else:
+        print(f"錯誤：不應為 FAKE_TICKER_XYZ 獲取到數據，但得到了 {fake_interval} 的數據。")
 
-    # 測試案例 4: 讀取快取
-    print("\n--- 測試案例 4: AAPL 1m (應從快取讀取) ---")
-    aapl_data_cache = client.fetch_data("AAPL", "1m")
-    if aapl_data_cache is not None:
-        print(f"再次獲取 AAPL (1m)數據，共 {len(aapl_data_cache)} 筆。")
+    # 測試案例 4: 指定一個中間的 start_interval，例如 '1h'
+    print("\n--- 測試案例 4: MSFT, start_interval='1h' ---")
+    msft_data, msft_interval = client.fetch_data_adaptively("MSFT", start_interval='1h')
+    if msft_data is not None:
+        print(f"成功獲取 MSFT 數據，最終區間: {msft_interval}，共 {len(msft_data)} 筆。")
+        print(msft_data.head())
+    else:
+        print(f"未能獲取 MSFT 數據。")
 
-    # 測試案例 5: 特殊標的 (例如加密貨幣，可能需要不同處理)
-    print("\n--- 測試案例 5: BTC-USD 1h ---")
-    btc_data = client.fetch_data("BTC-USD", "1h")
-    if btc_data is not None:
-        print(f"成功獲取 BTC-USD (1h)數據，共 {len(btc_data)} 筆。")
-        print(btc_data.head())
-        print(btc_data.info())
+    # 測試案例 5: 嘗試一個不存在於 FALLBACK_INTERVALS 的 start_interval
+    print("\n--- 測試案例 5: TSLA, start_interval='2m' (無效起始區間) ---")
+    tsla_data, tsla_interval = client.fetch_data_adaptively("TSLA", start_interval='2m')
+    if tsla_data is None and tsla_interval is None:
+        print("成功處理無效起始區間 '2m' (符合預期)。")
+    else:
+        print(f"錯誤：對於無效起始區間 '2m'，不應有返回數據。")
+
+    # 測試舊的 fetch_data 方法 (可選)
+    # print("\n--- 測試舊的 fetch_data 方法: GOOG 5m ---")
+    # goog_data_old = client.fetch_data("GOOG", "5m")
+    # if goog_data_old is not None:
+    #     print(f"舊方法成功獲取 GOOG (5m)數據，共 {len(goog_data_old)} 筆。")
+    #     print(goog_data_old.head())
 
     print("\n--- YFinanceClient 測試完畢 ---")
