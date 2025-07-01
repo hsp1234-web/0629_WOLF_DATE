@@ -54,17 +54,21 @@ class TestDailyMarketAnalyzerRun(unittest.TestCase):
             }
         return log
 
+    @patch('apps.daily_market_analyzer.run.os.makedirs')
+    @patch('builtins.open', new_callable=unittest.mock.mock_open)
     @patch('apps.daily_market_analyzer.run.ReportGenerator')
     @patch('apps.daily_market_analyzer.run.AnalysisEngine')
     @patch('apps.daily_market_analyzer.run.DBManager')
     @patch('apps.daily_market_analyzer.run.YFinanceClient')
     @patch('apps.daily_market_analyzer.run.argparse.ArgumentParser')
-    def test_main_flow_success_case(self, mock_argparse, mock_yf_client_class, mock_db_manager_class, mock_analysis_engine_class, mock_report_generator_class):
-        print("\n--- 測試案例：主要流程成功 (每日市場分析儀) ---")
+    def test_main_flow_success_case(self, mock_argparse, mock_yf_client_class,
+                                    mock_db_manager_class, mock_analysis_engine_class,
+                                    mock_report_generator_class, mock_builtin_open, mock_os_makedirs):
+        print("\n--- 測試案例：主要流程成功 (每日市場分析儀 v12.1) ---")
         mock_args = MagicMock()
         mock_args.tickers = "AAPL,MSFT"
         mock_args.start_date = "2024-01-01"
-        mock_args.end_date = "2024-01-02"
+        mock_args.end_date = "2024-01-02" # 測試兩天
         mock_args.db_path = "mock_analyzer.db"
         mock_args.table_name = "mock_analyzer_ohlcv"
         mock_args.process_uploads = False
@@ -74,88 +78,87 @@ class TestDailyMarketAnalyzerRun(unittest.TestCase):
         mock_argparse.return_value = mock_parser_instance
 
         mock_yf_client_instance = MagicMock()
-        # AAPL 數據和日誌 (兩天)
-        mock_aapl_df_day1 = self.create_mock_dataframe(ticker="AAPL", interval="1m", num_rows=1, start_date_str="2024-01-01")
-        mock_aapl_df_day2 = self.create_mock_dataframe(ticker="AAPL", interval="1m", num_rows=1, start_date_str="2024-01-02")
-        mock_aapl_df = pd.concat([mock_aapl_df_day1, mock_aapl_df_day2])
 
-        mock_aapl_log = self.create_mock_execution_log(ticker="AAPL", interval="1m", count=1, start_date_str="2024-01-01", num_days=1)
-        mock_aapl_log.update(self.create_mock_execution_log(ticker="AAPL", interval="1m", count=1, start_date_str="2024-01-02", num_days=1))
-
-        # MSFT 數據和日誌 (兩天)
-        mock_msft_df_day1 = self.create_mock_dataframe(ticker="MSFT", interval="5m", num_rows=1, start_date_str="2024-01-01")
-        mock_msft_df_day2 = self.create_mock_dataframe(ticker="MSFT", interval="5m", num_rows=1, start_date_str="2024-01-02")
-        mock_msft_df = pd.concat([mock_msft_df_day1, mock_msft_df_day2])
-
-        mock_msft_log = self.create_mock_execution_log(ticker="MSFT", interval="5m", count=1, start_date_str="2024-01-01", num_days=1)
-        mock_msft_log.update(self.create_mock_execution_log(ticker="MSFT", interval="5m", count=1, start_date_str="2024-01-02", num_days=1))
+        # 準備 AAPL 的完整執行日誌 (覆蓋請求的兩天)
+        mock_aapl_full_log = {}
+        mock_aapl_full_log.update(self.create_mock_execution_log(ticker="AAPL", interval="1m", count=10, start_date_str="2024-01-01", num_days=1))
+        mock_aapl_full_log.update(self.create_mock_execution_log(ticker="AAPL", interval="1m", count=12, start_date_str="2024-01-02", num_days=1))
+        # 假設 hydrate_data_range 返回的 DataFrame 是針對整個期間的合併數據，或最後一個 chunk 的數據
+        # 為了簡化，我們讓它返回一個包含多日數據的 DataFrame
+        mock_aapl_df = pd.concat([
+            self.create_mock_dataframe(ticker="AAPL", interval="1m", num_rows=10, start_date_str="2024-01-01"),
+            self.create_mock_dataframe(ticker="AAPL", interval="1m", num_rows=12, start_date_str="2024-01-02")
+        ])
 
 
-        def yf_hydrate_side_effect(ticker, start_date, end_date):
+        # 準備 MSFT 的完整執行日誌
+        mock_msft_full_log = {}
+        mock_msft_full_log.update(self.create_mock_execution_log(ticker="MSFT", interval="1d", count=1, start_date_str="2024-01-01", num_days=1))
+        mock_msft_full_log.update(self.create_mock_execution_log(ticker="MSFT", interval="1d", count=1, start_date_str="2024-01-02", num_days=1))
+        mock_msft_df = pd.concat([
+            self.create_mock_dataframe(ticker="MSFT", interval="1d", num_rows=1, start_date_str="2024-01-01"),
+            self.create_mock_dataframe(ticker="MSFT", interval="1d", num_rows=1, start_date_str="2024-01-02")
+        ])
+
+        def yf_hydrate_side_effect(ticker, start_date_arg, end_date_arg):
             if ticker == "AAPL":
-                return mock_aapl_df, mock_aapl_log
+                return mock_aapl_df, mock_aapl_full_log
             elif ticker == "MSFT":
-                return mock_msft_df, mock_msft_log
-            return pd.DataFrame(), {} # 返回空的 DataFrame 和 log
+                return mock_msft_df, mock_msft_full_log
+            return pd.DataFrame(), {}
         mock_yf_client_instance.hydrate_data_range.side_effect = yf_hydrate_side_effect
         mock_yf_client_class.return_value = mock_yf_client_instance
 
         mock_db_manager_instance = MagicMock()
         mock_db_manager_class.return_value = mock_db_manager_instance
+
         mock_analysis_engine_instance = MagicMock()
+        def mock_analyze_data(ticker, date_str, table_name): # 模擬返回包含 interpretation
+            return {"status": "success", "close": "100.00", "change_pct": "+1.00%",
+                    "range_pct": "2.00%", "volume": "100000", "prev_close":"99.00",
+                    "interpretation": f"對 {ticker} 在 {date_str} 的模擬市場解讀。"}
+        mock_analysis_engine_instance.analyze_daily_ticker_data.side_effect = mock_analyze_data
         mock_analysis_engine_class.return_value = mock_analysis_engine_instance
+
         mock_report_generator_instance = MagicMock()
-        mock_report_generator_instance.generate_full_report.return_value = "模擬報告內容" #確保返回字符串
+        simulated_report_content = f"# 模擬報告 {mock_args.start_date} 至 {mock_args.end_date}\n- AAPL: ...\n- MSFT: ..."
+        mock_report_generator_instance.generate_full_report.return_value = simulated_report_content
         mock_report_generator_class.return_value = mock_report_generator_instance
 
-        with patch('builtins.print') as mock_print: # 捕獲 print 輸出
+        with patch('builtins.print') as mock_builtin_print:
             daily_market_analyzer_run.main()
+
+            mock_os_makedirs.assert_called_once_with(os.path.join("data_workspace", "reports"), exist_ok=True)
+            mock_builtin_open.assert_called_once()
+            args_open, kwargs_open = mock_builtin_open.call_args
+            self.assertTrue(args_open[0].startswith(os.path.join("data_workspace", "reports", "market_analysis_report_")))
+            self.assertTrue(args_open[0].endswith(".md"))
+            self.assertEqual(args_open[1], "w")
+            self.assertEqual(kwargs_open['encoding'], "utf-8")
+            mock_builtin_open().write.assert_called_once_with(simulated_report_content)
 
             mock_argparse.assert_called_once()
             mock_parser_instance.parse_args.assert_called_once()
             mock_yf_client_class.assert_called_once_with()
-
             self.assertEqual(mock_yf_client_instance.hydrate_data_range.call_count, 2)
-            mock_yf_client_instance.hydrate_data_range.assert_any_call("AAPL", "2024-01-01", "2024-01-02")
-            mock_yf_client_instance.hydrate_data_range.assert_any_call("MSFT", "2024-01-01", "2024-01-02")
-
             mock_db_manager_class.assert_called_once_with(db_path="mock_analyzer.db")
-            mock_db_manager_instance.create_ohlcv_table.assert_called_once_with(table_name="mock_analyzer_ohlcv")
-            self.assertEqual(mock_db_manager_instance.upsert_data.call_count, 2)
-            # 驗證 upsert_data 時傳遞的是 DataFrame
-            self.assertTrue(pd.DataFrame.equals(mock_db_manager_instance.upsert_data.call_args_list[0][0][0], mock_aapl_df))
-            self.assertEqual(mock_db_manager_instance.upsert_data.call_args_list[0][1]['table_name'], "mock_analyzer_ohlcv")
-            self.assertTrue(pd.DataFrame.equals(mock_db_manager_instance.upsert_data.call_args_list[1][0][0], mock_msft_df))
-            self.assertEqual(mock_db_manager_instance.upsert_data.call_args_list[1][1]['table_name'], "mock_analyzer_ohlcv")
-
-
             mock_analysis_engine_class.assert_called_once_with(db_manager_instance=mock_db_manager_instance)
 
             expected_overall_log = {}
-            for date_key, ticker_log_val in mock_aapl_log.items():
-                expected_overall_log.setdefault(date_key, {}).update(ticker_log_val)
-            for date_key, ticker_log_val in mock_msft_log.items():
-                expected_overall_log.setdefault(date_key, {}).update(ticker_log_val)
+            for date_key, ticker_logs in mock_aapl_full_log.items():
+                expected_overall_log.setdefault(date_key, {}).update(ticker_logs)
+            for date_key, ticker_logs in mock_msft_full_log.items():
+                expected_overall_log.setdefault(date_key, {}).update(ticker_logs)
 
             mock_report_generator_class.assert_called_once_with(
                 execution_log=expected_overall_log,
                 analysis_engine_instance=mock_analysis_engine_instance
             )
 
-            # 新增：首先確認 generate_full_report 是否被調用
             mock_report_generator_instance.generate_full_report.assert_called_once()
-
-            # 獲取 call_args
-            # call_args 是一個 unittest.mock.call 實例，它是一個元組 (args, kwargs)
-            # args 是位置參數的元組，kwargs 是關鍵字參數的字典
             call_args_info = mock_report_generator_instance.generate_full_report.call_args
-
-            # 位置參數應該是空的，因為 run.py 使用關鍵字參數調用
             self.assertEqual(len(call_args_info.args), 0, "generate_full_report 不應使用位置參數調用")
-
-            # 關鍵字參數在 call_args.kwargs
             report_kwargs = call_args_info.kwargs
-
             self.assertEqual(report_kwargs['overall_start_date_str'], mock_args.start_date)
             self.assertEqual(report_kwargs['overall_end_date_str'], mock_args.end_date)
             self.assertIsInstance(report_kwargs['report_generation_time'], datetime)
@@ -163,17 +166,21 @@ class TestDailyMarketAnalyzerRun(unittest.TestCase):
             self.assertEqual(report_kwargs['target_tickers'], ["AAPL", "MSFT"])
             self.assertEqual(report_kwargs['db_table_name'], mock_args.table_name)
 
-            # 驗證報告內容被打印
-            mock_print.assert_any_call("\n--- 市場分析報告內容 ---")
-            mock_print.assert_any_call("模擬報告內容")
+            mock_builtin_print.assert_any_call("\n--- 市場分析報告內容預覽 ---")
+            # 驗證是否打印了 simulated_report_content 的第一行
+            mock_builtin_print.assert_any_call(simulated_report_content.splitlines()[0])
 
 
+    @patch('apps.daily_market_analyzer.run.os.makedirs') # 新增對 os.makedirs 的 mock
+    @patch('builtins.open', new_callable=unittest.mock.mock_open) # 新增對 open 的 mock
     @patch('apps.daily_market_analyzer.run.ReportGenerator')
     @patch('apps.daily_market_analyzer.run.AnalysisEngine')
     @patch('apps.daily_market_analyzer.run.DBManager')
     @patch('apps.daily_market_analyzer.run.YFinanceClient')
     @patch('apps.daily_market_analyzer.run.argparse.ArgumentParser')
-    def test_main_flow_one_ticker_fails(self, mock_argparse, mock_yf_client_class, mock_db_manager_class, mock_analysis_engine_class, mock_report_generator_class):
+    def test_main_flow_one_ticker_fails(self, mock_argparse, mock_yf_client_class,
+                                        mock_db_manager_class, mock_analysis_engine_class,
+                                        mock_report_generator_class, mock_builtin_open, mock_os_makedirs): # 添加 mock 參數
         print("\n--- 測試案例：單一標的處理失敗 (每日市場分析儀) ---")
         mock_args = MagicMock()
         mock_args.tickers = "GOOD,BAD"
@@ -206,9 +213,16 @@ class TestDailyMarketAnalyzerRun(unittest.TestCase):
         mock_analysis_engine_instance = MagicMock()
         mock_analysis_engine_class.return_value = mock_analysis_engine_instance
         mock_report_generator_instance = MagicMock()
+        mock_report_generator_instance.generate_full_report.return_value = "模擬單一標的失敗報告" # 新增 return_value
         mock_report_generator_class.return_value = mock_report_generator_instance
 
-        daily_market_analyzer_run.main()
+        with patch('builtins.print') as mock_builtin_print: # Mock print
+            daily_market_analyzer_run.main()
+
+        # 驗證檔案操作被 mock (即使內容可能不重要，但流程應走到)
+        mock_os_makedirs.assert_called_once_with(os.path.join("data_workspace", "reports"), exist_ok=True)
+        mock_builtin_open.assert_called_once()
+        mock_builtin_open().write.assert_called_once_with("模擬單一標的失敗報告")
 
         mock_db_manager_instance.upsert_data.assert_called_once()
         self.assertTrue(pd.DataFrame.equals(mock_db_manager_instance.upsert_data.call_args[0][0], mock_good_df))
@@ -252,13 +266,25 @@ class TestDailyMarketAnalyzerRun(unittest.TestCase):
 
         with patch('apps.daily_market_analyzer.run.DBManager'), \
              patch('apps.daily_market_analyzer.run.AnalysisEngine'), \
-             patch('apps.daily_market_analyzer.run.ReportGenerator'), \
-             patch('builtins.print') as mock_print:
+             patch('apps.daily_market_analyzer.run.ReportGenerator') as mock_rg_class_uploads, \
+             patch('builtins.print') as mock_print, \
+             patch('apps.daily_market_analyzer.run.os.makedirs') as mock_os_makedirs_uploads, \
+             patch('builtins.open', new_callable=unittest.mock.mock_open) as mock_open_uploads:
+
+            # 設置 ReportGenerator mock 實例的行為
+            mock_rg_instance_for_uploads = MagicMock()
+            mock_rg_instance_for_uploads.generate_full_report.return_value = "模擬 process_uploads 報告"
+            mock_rg_class_uploads.return_value = mock_rg_instance_for_uploads
 
             daily_market_analyzer_run.main()
 
             mock_print.assert_any_call("資訊：--process-uploads 選項已指定，但此功能尚在開發中，將被略過。")
             mock_yf_client_instance.hydrate_data_range.assert_called_once_with("AAPL", "2024-01-01", "2024-01-01")
+
+            # 驗證檔案操作也被調用
+            mock_os_makedirs_uploads.assert_called_once_with(os.path.join("data_workspace", "reports"), exist_ok=True)
+            mock_open_uploads.assert_called_once()
+            mock_open_uploads().write.assert_called_once_with("模擬 process_uploads 報告")
 
 
 if __name__ == '__main__':

@@ -56,6 +56,8 @@ def main():
 
     print("--- 每日市場洞察報告引擎 v12.0 ---") # 更新版本號
     overall_start_time = datetime.now()
+    report_generation_time_for_filename = datetime.now() # <<-- 新增：提前定義用於檔案名的時間戳
+
     # 時區信息 %Z%z 可能因環境導致不同輸出，可考慮標準化為 UTC 或移除
     print(f"任務開始時間: {overall_start_time.strftime('%Y-%m-%d %H:%M:%S')}") # 簡化時間格式
     print(f"執行參數: 標的='{args.tickers}', 起始日='{args.start_date}', 結束日='{args.end_date}', 資料庫='{args.db_path}', 資料表='{args.table_name}'") # 中文化
@@ -120,26 +122,42 @@ def main():
 
     print("\n--- 生成市場分析報告 ---") # 中文化
 
-    # 生成報告並接收返回的報告文本
+    current_report_time = datetime.now() # 用於傳遞給 ReportGenerator
     final_report_str = report_gen.generate_full_report(
         overall_start_date_str=args.start_date,
         overall_end_date_str=args.end_date,
-        report_generation_time=datetime.now(), # 使用當前時間作為報告生成時間
+        report_generation_time=current_report_time,
         task_duration_seconds=task_duration_seconds,
         target_tickers=tickers_list,
         db_table_name=args.table_name
     )
 
-    # 打印報告到控制台
-    print("\n--- 市場分析報告內容 ---") # 中文化
-    print(final_report_str)
-    # 未來可考慮將 final_report_str 寫入檔案，例如：
-    # report_filename = f"market_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-    # with open(report_filename, "w", encoding="utf-8") as f:
-    #     f.write(final_report_str)
-    # print(f"\n報告已儲存至：{report_filename}")
+    # 打印報告到控制台 (預覽)
+    print("\n--- 市場分析報告內容預覽 ---")
+    preview_lines = final_report_str.splitlines()[:30]
+    for line in preview_lines:
+        print(line)
+    if len(final_report_str.splitlines()) > 30:
+        print("... (報告內容過長，已截斷預覽) ...")
 
-    print("\n--- 每日市場洞察報告引擎任務執行完畢 ---") # 中文化
+    # 將報告寫入檔案
+    report_output_dir = os.path.join("data_workspace", "reports") # 定義報告輸出目錄
+    os.makedirs(report_output_dir, exist_ok=True) # 確保目錄存在
+
+    # 使用提前定義的時間戳 report_generation_time_for_filename
+    print(f"DEBUG: Type of report_generation_time_for_filename before strftime: {type(report_generation_time_for_filename)}")
+    report_filename_dt_str = report_generation_time_for_filename.strftime('%Y%m%d_%H%M%S')
+    report_filename = f"market_analysis_report_{report_filename_dt_str}.md"
+    report_filepath = os.path.join(report_output_dir, report_filename)
+
+    try:
+        with open(report_filepath, "w", encoding="utf-8") as f:
+            f.write(final_report_str)
+        print(f"\n報告已成功儲存至：{report_filepath}")
+    except IOError as e:
+        print(f"\n錯誤：儲存報告至檔案失敗：{e}")
+
+    print("\n--- 每日市場洞察報告引擎任務執行完畢 ---")
 
 if __name__ == "__main__":
     # print(f"DEBUG: Current CWD for __main__ in daily_market_analyzer/run.py: {os.getcwd()}") # 移除調試信息
