@@ -637,22 +637,71 @@ def compile_and_save_report(
     elif output_format == 'md':
         # Markdown 報告生成邏輯
         md_report_path = os.path.join(output_dir, f"{base_filename}.md")
-        # 這裡需要實現 Markdown 內容的生成
-        # 為了演示，創建一個簡單的佔位 Markdown
-        md_content_lines = [
-            f"# {app_config.report_settings.report_title}",
-            f"報告生成時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"數據範圍：{final_df_for_report.index.min().strftime('%Y-%m-%d') if not final_df_for_report.empty else 'N/A'} 至 {final_df_for_report.index.max().strftime('%Y-%m-%d') if not final_df_for_report.empty else 'N/A'}",
-            "\n## 文字分析摘要",
-            "（此處應填入從 ReportData.text_analysis 轉換或提取的 Markdown 格式文字）",
-            core_text_analysis_html.replace("<p>", "").replace("</p>", "\n").replace("<li>", "- ").replace("</li>", "").replace("<ul>", "").replace("</ul>",""), # 簡易 HTML 轉 MD
-            "\n## 圖表",
-            "（Markdown 格式不直接嵌入 Plotly 圖表，可考慮儲存為圖片並鏈接）"
-        ]
+        current_logger.info(f"開始生成 Markdown 報告: {md_report_path}")
+
+        from markdownify import markdownify as md
+
+        md_content_lines = []
+
+        # 1. 報告標題和元數據
+        md_content_lines.append(f"# {app_config.report_settings.report_title}")
+        md_content_lines.append(f"\n**報告生成時間：** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        md_content_lines.append(f"**分析數據範圍：** {final_df_for_report.index.min().strftime('%Y-%m-%d') if not final_df_for_report.empty else 'N/A'} 至 {final_df_for_report.index.max().strftime('%Y-%m-%d') if not final_df_for_report.empty else 'N/A'}")
+
+        # 重新獲取 HTML 內容以轉換 (與 HTML 報告生成部分類似的邏輯)
+        temp_text_analysis_results_for_md = generate_text_analysis(final_df_for_report, app_config.model_dump())
+
+        # 2. 市場壓力概覽與歷史對比 (轉換自 HTML)
+        md_content_lines.append("\n## 一、市場壓力概覽與歷史對比")
+        latest_date_md = temp_text_analysis_results_for_md.get("latest_data_date", "N/A")
+        latest_value_md = temp_text_analysis_results_for_md.get("latest_stress_index_value", "N/A")
+        md_content_lines.append(f"**當前壓力指數 ({latest_date_md})：** {latest_value_md}")
+
+        historical_comparison_html_content = temp_text_analysis_results_for_md.get("historical_comparison_html", "<p>無歷史比較數據。</p>")
+        if historical_comparison_html_content:
+            md_content_lines.append(md(historical_comparison_html_content).strip())
+
+        # 3. AI 輔助市場綜合解讀與展望 (轉換自 HTML)
+        gemini_api_key_env_md = os.getenv('API_KEY_GEMINI')
+        gemini_analysis_md = None
+        gemini_error_md = None
+
+        if app_config.gemini_config and gemini_api_key_env_md and temp_text_analysis_results_for_md.get("gemini_input_data"):
+            ai_text_raw_md = call_gemini_api(
+                temp_text_analysis_results_for_md["gemini_input_data"],
+                gemini_api_key_env_md,
+                app_config.gemini_config.model_dump()
+            )
+            if ai_text_raw_md and "失敗" not in ai_text_raw_md and "未能" not in ai_text_raw_md and "套件未安裝" not in ai_text_raw_md and "金鑰未設定" not in ai_text_raw_md:
+                # call_gemini_api 返回的內容可能包含 <br>，markdownify 會處理
+                gemini_analysis_md = md(f"<p>{ai_text_raw_md}</p>").strip() # 包裹p標籤確保轉換器正確處理
+            else:
+                gemini_error_md = ai_text_raw_md or "未知 Gemini API 錯誤"
+        elif app_config.gemini_config and not gemini_api_key_env_md:
+            gemini_error_md = "已請求 AI 潤飾，但缺少 Gemini API 金鑰。"
+
+        if gemini_analysis_md:
+            md_content_lines.append("\n## 二、AI 輔助市場綜合解讀與展望")
+            md_content_lines.append(gemini_analysis_md)
+        elif gemini_error_md:
+            md_content_lines.append("\n## 二、AI 輔助市場綜合解讀與展望")
+            md_content_lines.append(f"*未能成功獲取 AI 輔助分析：{gemini_error_md}*")
+
+        # 4. 圖表提示 (目前不包含圖表)
+        md_content_lines.append("\n## 三、詳細圖表分析")
+        md_content_lines.append("（Markdown 版本報告目前不包含嵌入式圖表。詳細圖表請參閱 HTML 版本報告。）")
+
+        # 5. 市場壓力情境分析 (轉換自 HTML)
+        scenario_analysis_html_content = temp_text_analysis_results_for_md.get("scenario_analysis_html", "<p>無情境分析數據。</p>")
+        if scenario_analysis_html_content:
+            md_content_lines.append("\n## 四、市場壓力情境分析與一般性考量 (僅供參考)")
+            md_content_lines.append(md(scenario_analysis_html_content).strip())
+            md_content_lines.append("\n---\n<small>免責聲明：以上內容基於壓力指數的假設性變動，提供一般性的市場觀察和原則性考量，不構成任何形式的投資建議。市場實際表現受多重複雜因素影響，任何投資決策請務必諮詢合格的專業財務顧問，並進行獨立判斷。</small>")
+
         try:
             with open(md_report_path, 'w', encoding='utf-8') as f:
                 f.write("\n".join(md_content_lines))
-            current_logger.info(f"Markdown 報告（佔位）已成功生成於: {md_report_path}")
+            current_logger.info(f"Markdown 報告已成功生成於: {md_report_path}")
             return md_report_path
         except Exception as e:
             current_logger.error(f"儲存 Markdown 報告時發生錯誤: {e}", exc_info=True)
@@ -662,6 +711,4 @@ def compile_and_save_report(
         return None
 
     current_logger.info("compile_and_save_report 主函式執行完畢。")
-    # 此處應該有返回值，但原始碼中 compile_html_report 返回路徑或 None
-    # compile_and_save_report 也應該遵循此模式
-    return None # 如果沒有進入 html 或 md 分支
+    return None # 確保所有路徑都有返回值
