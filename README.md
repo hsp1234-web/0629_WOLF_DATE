@@ -1,5 +1,7 @@
 # Financial Forensics Engine (金融市場洞察引擎)
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hsp1234-web/0629_WOLF_DATE/blob/feature/jules-sop4-verification-%E7%B9%81%E9%AB%94%E4%B8%AD%E6%96%87/colab_notebook.ipynb)
+
 本專案是一個事件驅動的數據處理與分析引擎，旨在從多源數據（如社交媒體討論、金融市場行情）中提取洞察，並利用大型語言模型 (LLM) 生成分析報告，輔助金融市場決策。
 
 ## 核心功能
