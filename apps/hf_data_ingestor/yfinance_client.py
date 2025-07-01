@@ -132,7 +132,7 @@ class YFinanceClient:
                 data = stock_ticker.history(period=period, interval=interval, auto_adjust=True)
 
                 if data.empty:
-                    print(f"警告: {ticker} (間隔: {interval}) 在 yfinance 返回空數據。這可能是因為該標的沒有此顆粒度的數據，或是在此期間無交易。")
+                    print(f"警告: 標的 {ticker} (間隔: {interval}) 在 yfinance 返回空數據。原因可能是：(1) 此標的 (如 ^VIX) 不提供此間隔的數據；(2) 該時段無交易；(3) 股票代碼錯誤或已下市。")
                     # 存一個空的 DataFrame 到快取，避免短時間內重複查詢無效標的
                     pd.DataFrame().to_parquet(cache_file)
                     return None
