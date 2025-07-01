@@ -42,6 +42,7 @@ DEFAULT_REPORT_TEMPLATE_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ report_title }}</title>
+    <!-- Temporarily commenting out style block for debugging Jinja2 syntax error
     {% raw %}
     <style>
         body { font-family: 'Arial', 'Noto Sans CJK TC', sans-serif; margin: 20px; line-height: 1.6; }
@@ -56,6 +57,7 @@ DEFAULT_REPORT_TEMPLATE_HTML = """
         th { background-color: #f2f2f2; }
     </style>
     {% endraw %}
+    -->
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body>

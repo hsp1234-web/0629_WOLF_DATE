@@ -141,14 +141,14 @@ python -m apps.stress_report_app._test_harness
 
 6.  **`reporter.py` 修正與驗證 (HTML 報告渲染問題)**：
     *   **問題定位**：通過 Colab 截圖發現，生成的 HTML 報告中圖表部分顯示的是 Jinja2 模板原始碼，表明模板渲染失敗。
-    *   **原因分析**：`reporter.py` 中原有的 `render_template_simple` 函數是一個簡易的字串替換實現，並非真正的 Jinja2 渲染。且 `DEFAULT_REPORT_TEMPLATE_HTML` 中的 CSS 部分存在與 Jinja2 語法衝突的雙大括號。
+    *   **原因分析**：`reporter.py` 中原有的 `render_template_simple` 函數是一個簡易的字串替換實現，並非真正的 Jinja2 渲染。且 `DEFAULT_REPORT_TEMPLATE_HTML` 中的 CSS 部分（即使在 `{% raw %}` 標籤內）的某些寫法可能與 Jinja2 解析器的期望衝突，導致 `TemplateSyntaxError`。
     *   **修復**：
         *   在 `requirements.txt` 中添加 `Jinja2` 依賴並安裝。
         *   修改 `reporter.py`，導入 `jinja2.Template`。
         *   移除 `render_template_simple` 函數。
         *   修改 `compile_html_report` 輔助函數，使用 `Template(DEFAULT_REPORT_TEMPLATE_HTML).render(context)` 進行標準的 Jinja2 渲染。
-        *   修改 `DEFAULT_REPORT_TEMPLATE_HTML` 模板，使用 `{% raw %}` 和 `{% endraw %}` 包裹 `<style>` 標籤內容，並修正 CSS 中錯誤的雙大括號為單大括號，以避免與 Jinja2 語法衝突。
-    *   **驗證**：修復後，再次通過 `_test_harness.py` 執行 `app.py` 生成 HTML 報告，確認模板被正確渲染，圖表能夠正常顯示（在數據允許的情況下）。
+        *   修改 `DEFAULT_REPORT_TEMPLATE_HTML` 模板，確保 `<style>` 標籤被 `{% raw %}` 和 `{% endraw %}` 正確包裹，並修正了 CSS 內部潛在的與 Jinja2 語法相似的結構（如將 `body {{...}}` 改為 `body { ... }`）。
+    *   **驗證**：修復後，再次通過 `_test_harness.py` 執行 `app.py` 生成 HTML 報告，確認模板被正確渲染，圖表能夠正常顯示（在數據允許的情況下），不再出現 `TemplateSyntaxError`。
 
 7.  **`app.py` 端到端流程驗證**：
     *   在解決了上述依賴、配置、核心模組數據及報告渲染問題後，通過 `_test_harness.py` 中的 `test_app_container_execution` 函數，成功模擬了 `app.py` 的完整執行流程。
