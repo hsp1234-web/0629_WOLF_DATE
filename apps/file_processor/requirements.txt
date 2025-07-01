@@ -1,0 +1,15 @@
+# -*- coding: utf-8 -*-
+# 核心依賴
+pandas
+duckdb
+
+# 解析特定檔案格式可能需要的額外依賴
+# 例如，如果需要讀取 Excel 檔案:
+# openpyxl
+# xlrd
+
+# 目前 txo_daily_parser 只使用 pandas 讀取 CSV，
+# 但若未來有其他 parser 需要特殊函式庫，應加於此處。
+
+# numpy (pandas 的依賴，但明確列出無妨)
+numpy

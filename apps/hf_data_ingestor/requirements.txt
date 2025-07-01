@@ -1,0 +1,16 @@
+# -*- coding: utf-8 -*-
+# 核心依賴
+pandas
+yfinance
+duckdb
+
+# yfinance 可能需要的隱性依賴 (根據其 setup.py 和常見問題)
+requests
+pytz
+lxml # yfinance 用於解析 HTML
+appdirs # yfinance 用於快取等
+multitasking # yfinance 用於並行下載 (可選，但建議加入)
+numpy # pandas 的依賴，但明確列出無妨
+beautifulsoup4 # yfinance 依賴
+html5lib # 可選的 parser for beautifulsoup4
+frozentable # yfinance 依賴
