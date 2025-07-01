@@ -168,6 +168,16 @@ class YFinanceClient:
         """
         print(f"===== 開始數據回填任務: Ticker={ticker}, Range=[{start_date_str} to {end_date_str}] =====")
 
+        execution_log = {} # 初始化執行日誌
+        # 生成請求日期範圍內的所有日期字串，用於日誌記錄
+        request_date_range_str = [d.strftime("%Y-%m-%d") for d in pd.date_range(start_date_str, end_date_str)]
+
+        # 預先為日誌中的每個日期和 ticker 設置初始狀態 (例如 pending 或 unknown)
+        for date_str_in_range in request_date_range_str:
+            execution_log.setdefault(date_str_in_range, {})[ticker] = {
+                "status": "pending", "interval": None, "count": 0, "message": "Awaiting processing"
+            }
+
         # 嘗試從最精細的顆粒度開始
         for interval in self.FALLBACK_INTERVALS:
             print(f"\nINFO: hydrate_data_range: 正在嘗試使用顆粒度 '{interval}' 回填 {ticker} 從 {start_date_str} 到 {end_date_str}...")
@@ -184,42 +194,116 @@ class YFinanceClient:
 
             print(f"INFO: hydrate_data_range: 顆粒度 '{interval}'，共切分為 {len(date_chunks)} 個時間區塊。")
 
-            current_interval_all_data = []
+            current_interval_all_data_dfs = []
             all_chunks_successful_for_this_interval = True
 
-            for i, (chunk_start, chunk_end) in enumerate(date_chunks):
-                print(f"INFO: hydrate_data_range: 正在處理區塊 {i+1}/{len(date_chunks)} ({chunk_start} to {chunk_end} exclusive) for interval '{interval}'...")
-                # 注意：fetch_single_chunk 內部會處理 yfinance 的 end date 排他性
-                chunk_df = self.fetch_single_chunk(ticker, chunk_start, chunk_end, interval)
+            # 30天限制的日期 (僅與日期部分比較)
+            thirty_days_ago_date = (datetime.now() - timedelta(days=30)).date()
+
+            for i, (chunk_start_str, chunk_end_str) in enumerate(date_chunks):
+                print(f"INFO: hydrate_data_range: 正在處理區塊 {i+1}/{len(date_chunks)} ({chunk_start_str} to {chunk_end_str} exclusive) for interval '{interval}'...")
+
+                # 【關鍵新增】智能跳過無效請求 - 檢查1m數據是否超過30天窗口
+                # chunk_start_date_obj 是 datetime.date 物件
+                chunk_start_date_obj = datetime.strptime(chunk_start_str, "%Y-%m-%d").date()
+                if interval == '1m' and chunk_start_date_obj < thirty_days_ago_date:
+                    print(f"INFO: hydrate_data_range: 區塊起始日期 {chunk_start_str} 的 '1m' 數據請求已超過30天回溯限制，跳過此區塊的 '1m' 嘗試。")
+                    # 此處標記此 interval 失敗，因為即使一個 chunk 超限，整個 1m 策略也應被視為對該 chunk 無效
+                    # 如果要更細緻，可以只標記這個 chunk 的 1m 失敗，然後繼續用 1m 處理其他 chunk，
+                    # 但這會讓日誌和數據合併複雜化。目前策略是：如果一個 chunk 的 1m 超限，則整個 interval 的 1m 嘗試失敗。
+                    all_chunks_successful_for_this_interval = False # 標記此 interval 失敗
+                    # 更新 execution_log 中此 chunk 覆蓋日期的狀態
+                    for day_offset in range((datetime.strptime(chunk_end_str, "%Y-%m-%d") - timedelta(days=1) - datetime.strptime(chunk_start_str, "%Y-%m-%d")).days + 1):
+                        log_date_str = (datetime.strptime(chunk_start_str, "%Y-%m-%d") + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+                        if log_date_str in execution_log:
+                             execution_log[log_date_str][ticker] = {
+                                "status": "skipped_1m_due_to_30day_limit", "interval": "1m", "count": 0,
+                                "message": f"1m data for {log_date_str} skipped, outside 30-day window."
+                            }
+                    break # 跳出當前 interval 的 chunks 循環, 嘗試下一個更粗的 interval
+
+                chunk_df = self.fetch_single_chunk(ticker, chunk_start_str, chunk_end_str, interval)
+
+                # 更新執行日誌 (無論成功或失敗)
+                # 假設 chunk_df 包含的日期都在 chunk_start_str 和 (chunk_end_str - 1 day) 之間
+                # 遍歷此 chunk 覆蓋的每一天來更新日誌
+                current_chunk_date = datetime.strptime(chunk_start_str, "%Y-%m-%d")
+                actual_chunk_end_date = datetime.strptime(chunk_end_str, "%Y-%m-%d") - timedelta(days=1)
+
+                while current_chunk_date <= actual_chunk_end_date:
+                    log_date_str = current_chunk_date.strftime("%Y-%m-%d")
+                    if log_date_str in execution_log: # 只更新請求範圍內的日期
+                        if chunk_df is not None and not chunk_df.empty:
+                            # 計算當日數據筆數
+                            daily_rows_in_chunk = chunk_df[chunk_df.index.date == current_chunk_date.date()]
+                            execution_log[log_date_str][ticker] = {
+                                "status": "success_partial" if len(date_chunks) > 1 else "success", # 標記是否只是部分
+                                "interval": interval,
+                                "count": len(daily_rows_in_chunk),
+                                "message": f"Successfully fetched {len(daily_rows_in_chunk)} rows for {log_date_str} with {interval}."
+                            }
+                        else: # chunk_df is None or empty
+                            execution_log[log_date_str][ticker] = {
+                                "status": "failed_chunk", "interval": interval, "count": 0,
+                                "message": f"Failed to fetch data for chunk covering {log_date_str} with {interval}."
+                            }
+                    current_chunk_date += timedelta(days=1)
 
                 if chunk_df is not None and not chunk_df.empty:
-                    current_interval_all_data.append(chunk_df)
+                    current_interval_all_data_dfs.append(chunk_df)
                 else:
-                    print(f"警告: hydrate_data_range: 顆粒度 '{interval}'，區塊 {chunk_start}-{chunk_end} 數據抓取失敗或為空。此顆粒度嘗試終止。")
+                    print(f"警告: hydrate_data_range: 顆粒度 '{interval}'，區塊 {chunk_start_str}-{chunk_end_str} 數據抓取失敗或為空。此顆粒度嘗試終止。")
                     all_chunks_successful_for_this_interval = False
-                    break # 跳出此 interval 的 chunks 循環，嘗試下一個更粗的 interval
+                    break # 跳出此 interval 的 chunks 循環, 嘗試下一個更粗的 interval
 
-            if all_chunks_successful_for_this_interval and current_interval_all_data:
-                final_df = pd.concat(current_interval_all_data, ignore_index=False) # 保留 DatetimeIndex
-                # 再次確保 ticker 和 interval 欄位存在 (儘管 fetch_single_chunk 已加入)
+            if all_chunks_successful_for_this_interval and current_interval_all_data_dfs:
+                final_df = pd.concat(current_interval_all_data_dfs, ignore_index=False) # 保留 DatetimeIndex
                 final_df['ticker'] = ticker
-                final_df['interval'] = interval
+                final_df['interval'] = interval # 確保最終 df 也有 interval (儘管 chunk 已有)
+
+                # 再次遍歷 final_df 的日期，確保 execution_log 的 status 和 count 是最終的
+                for date_str_in_df in final_df.index.strftime("%Y-%m-%d").unique():
+                    if date_str_in_df in execution_log:
+                         daily_rows_final = final_df[final_df.index.strftime("%Y-%m-%d") == date_str_in_df]
+                         execution_log[date_str_in_df][ticker] = {
+                            "status": "success",
+                            "interval": interval,
+                            "count": len(daily_rows_final),
+                            "message": f"Final data for {date_str_in_df} with {interval}."
+                        }
+
                 print(f"成功: hydrate_data_range: 已使用顆粒度 '{interval}' 完成 {ticker} 在 {start_date_str} 到 {end_date_str} 的所有數據回填。共 {len(final_df)} 筆。")
                 print(f"===== 數據回填任務結束 (成功): Ticker={ticker} =====")
-                return final_df
-            elif not current_interval_all_data and all_chunks_successful_for_this_interval:
-                 print(f"INFO: hydrate_data_range: 顆粒度 '{interval}' 所有區塊均未返回數據，但未發生錯誤。嘗試下一個顆粒度。")
-            else:
+                return final_df, execution_log
+            elif not current_interval_all_data_dfs and all_chunks_successful_for_this_interval:
+                 print(f"INFO: hydrate_data_range: 顆粒度 '{interval}' 所有區塊均未返回數據(可能該時段無交易)，但未發生API錯誤。嘗試下一個顆粒度。")
+                 # 更新日誌，標記這些日期使用此 interval 時無數據
+                 for date_str_in_range in request_date_range_str:
+                     if execution_log[date_str_in_range][ticker]['status'] != 'success': # 避免覆蓋已成功的更細顆粒度日誌
+                        execution_log[date_str_in_range][ticker] = {
+                            "status": "no_data_for_interval", "interval": interval, "count": 0,
+                            "message": f"No data found for {date_str_in_range} with {interval} after all chunks."
+                        }
+            else: # all_chunks_successful_for_this_interval is False
                 print(f"INFO: hydrate_data_range: 顆粒度 '{interval}' 未能成功回填所有區塊。嘗試下一個更粗的顆粒度。")
+                # execution_log 應已被 chunk 級別的失敗更新
 
-            time.sleep(1) # 在嘗試不同 interval 之間稍作停頓
+            time.sleep(0.5) # 在嘗試不同 interval 之間稍作停頓
 
+        # 如果所有 interval 都嘗試失敗
         print(f"錯誤: hydrate_data_range: 所有降級顆粒度 {self.FALLBACK_INTERVALS} 均無法為 {ticker} 在 {start_date_str} 到 {end_date_str} 範圍內回填任何數據。")
         print(f"===== 數據回填任務結束 (失敗): Ticker={ticker} =====")
-        return None
+        # 更新日誌中所有仍在 pending 的狀態為最終失敗
+        for date_str_in_range in request_date_range_str:
+            if execution_log[date_str_in_range][ticker]['status'] not in ["success", "skipped_1m_due_to_30day_limit"]:
+                 execution_log[date_str_in_range][ticker] = {
+                    "status": "failed_all_intervals", "interval": None, "count": 0,
+                    "message": f"All intervals failed for {date_str_in_range}."
+                }
+        return None, execution_log
 
 if __name__ == '__main__':
-    print("--- YFinanceClient (Data Hydrator) 測試 ---")
+    print("--- YFinanceClient (Daily Market Analyzer) 測試 ---")
     client = YFinanceClient()
 
     # 測試日期範圍和股票代碼
