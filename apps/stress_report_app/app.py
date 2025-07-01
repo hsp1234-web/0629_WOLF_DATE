@@ -48,6 +48,7 @@ def main():
     parser.add_argument('--no-text', action='store_true', help="不生成文字分析 (將影響報告內容)")
     parser.add_argument('--use-ai-refine', action='store_true', help="使用 AI 潤飾文字分析 (需設定 Gemini API Key)")
     parser.add_argument('--config-path', default='config/project_config.yaml', help="設定檔路徑")
+    parser.add_argument('--debug', action='store_true', help="啟用除錯模式 (可選，主要由 Colab 平台傳入)") # 新增 --debug 參數
     args = parser.parse_args()
 
     logger.info(f"命令列參數: {vars(args)}")
