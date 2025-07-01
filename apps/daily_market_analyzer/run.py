@@ -51,6 +51,13 @@ def main():
                         help="資料庫中儲存 OHLCV 數據的表格名稱。") # 中文化 help
     parser.add_argument("--process-uploads", action="store_true",
                         help="若指定，則處理 'uploads' 資料夾 (此功能待實現)。") # 中文化 help
+    parser.add_argument(
+        '--report-interval',
+        type=str,
+        default='1d',  # 將 '1d' (日線) 設為預設值
+        choices=['1m', '5m', '30m', '1h', '2h', '4h', '8h', '12h', '1d'],
+        help='用於生成市場快照報告的時間顆粒度。預設為 "1d"。'
+    )
 
     args = parser.parse_args()
 
@@ -69,7 +76,10 @@ def main():
     # 初始化組件
     yf_client = YFinanceClient()
     db_manager = DBManager(db_path=args.db_path)
-    analysis_engine = AnalysisEngine(db_manager_instance=db_manager) # 傳遞 db_manager 實例
+    analysis_engine = AnalysisEngine(
+        db_manager_instance=db_manager,
+        report_interval=args.report_interval
+    ) # 傳遞 db_manager 實例與報告顆粒度
 
     # 確保資料表存在 (使用 DBManager 的方法)
     db_manager.create_ohlcv_table(table_name=args.table_name)

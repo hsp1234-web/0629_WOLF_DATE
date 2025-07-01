@@ -6,19 +6,25 @@
 import pandas as pd
 from datetime import datetime # 需要 datetime 來處理日期字串轉換 (雖然 DBManager 可能已處理)
 
+import logging # 新增 logging 模組
+
 # 假設 db_manager.py 與此檔案在同一目錄下，或者已在 sys.path 中
 # from .db_manager import DBManager # 使用相對導入，如果它們是同一個 package 的一部分
 
 class AnalysisEngine:
-    def __init__(self, db_manager_instance): # 修改參數名以清晰表示是實例
+    def __init__(self, db_manager_instance, report_interval='1d'): # 修改簽名以接收 report_interval
         """
         初始化分析引擎 (AnalysisEngine)。
 
         Args:
             db_manager_instance: DBManager 的一個實例，用於資料庫查詢。
+            report_interval (str): 用於報告分析的時間顆粒度。
         """
         self.db_manager = db_manager_instance # 修改屬性名以匹配參數
-        print("資訊：分析引擎 (AnalysisEngine) 初始化完畢。")
+        self.report_interval = report_interval # 新增此屬性
+        self.logger = logging.getLogger(self.__class__.__name__) # 標準日誌記錄器
+        # 使用 self.logger 進行日誌記錄
+        self.logger.info(f"分析引擎 (AnalysisEngine) 初始化完畢。報告顆粒度設定為: {self.report_interval}")
 
     def analyze_daily_ticker_data(self, ticker: str, date_str: str, table_name: str = "market_ohlcv_analyzer") -> dict:
         """
@@ -38,52 +44,98 @@ class AnalysisEngine:
 
         # 從 DBManager 獲取當日數據
         # 假設 query_data_for_day 返回的 DataFrame 的 index 是 DatetimeIndex (UTC)
-        daily_data_df = self.db_manager.query_data_for_day(ticker, date_str, table_name)
+        # 並且包含 'datetime', 'open', 'high', 'low', 'close', 'volume' 欄位
+        raw_daily_data_df = self.db_manager.query_data_for_day(ticker, date_str, table_name)
 
-        if daily_data_df.empty:
-            # print(f"調試：分析引擎：標的 {ticker} 在日期 {date_str} 無數據。")
-            return {"status": "no_data", "message": f"無 {ticker} 在 {date_str} 的數據。"}
+        if raw_daily_data_df.empty:
+            self.logger.info(f"標的 {ticker} 在日期 {date_str} 無原始數據。")
+            return {"status": "no_data", "message": f"無 {ticker} 在 {date_str} 的原始數據。"}
 
-        # 計算指標
-        # 當日收盤價：取當日數據的最後一筆 'close'
-        # 假設 daily_data_df 已按時間升序排列 (由 query_data_for_day 保證)
-        close_price = daily_data_df['close'].iloc[-1]
+        # 數據重採樣 (Resampling)
+        # 確保索引是 datetime 類型
+        # db_manager.query_data_for_day 應該已經返回以 datetime 為索引的 DataFrame
+        # 如果不是，則需要取消註解以下兩行：
+        # raw_daily_data_df['datetime'] = pd.to_datetime(raw_daily_data_df['datetime'])
+        # raw_daily_data_df.set_index('datetime', inplace=True)
 
-        # 獲取前一日收盤價
+        # 定義聚合規則
+        aggregation_rules = {
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        }
+
+        # 執行重採樣
+        try:
+            # 確保索引是 DatetimeIndex
+            if not isinstance(raw_daily_data_df.index, pd.DatetimeIndex):
+                # 嘗試轉換 'datetime' 欄 (如果存在) 或索引
+                if 'datetime' in raw_daily_data_df.columns:
+                    raw_daily_data_df['datetime'] = pd.to_datetime(raw_daily_data_df['datetime'])
+                    raw_daily_data_df.set_index('datetime', inplace=True)
+                else: # 假設索引可以直接轉換
+                    raw_daily_data_df.index = pd.to_datetime(raw_daily_data_df.index)
+
+            resampled_df = raw_daily_data_df.resample(self.report_interval).agg(aggregation_rules)
+            resampled_df.dropna(how='all', inplace=True) # 移除所有值均為 NaN 的行 (因重採樣產生)
+        except Exception as e:
+            self.logger.error(f"標的 {ticker} 在日期 {date_str} 進行數據重採樣至 {self.report_interval} 時失敗: {e}")
+            return {"status": "resample_error", "message": f"數據重採樣失敗: {e}"}
+
+        if resampled_df.empty:
+            self.logger.info(f"標的 {ticker} 在日期 {date_str} 重採樣至 {self.report_interval} 後數據為空。")
+            return {"status": "no_data_after_resample", "message": f"重採樣至 {self.report_interval} 後無數據。"}
+
+        # 計算指標: 使用重採樣後的數據 (resampled_df)
+        # 當日收盤價、最高價、最低價、總成交量直接從最後一個有效時間段的聚合結果中獲取
+        # 注意：對於 '1d' 或更長間隔，通常只有一行數據。
+        # 對於日內間隔 (如 '1h', '4h')，我們可能需要考慮如何定義「當日」的這些值。
+        # 此處假設：
+        # - close_price 是最後一個 interval 的收盤價。
+        # - high_price 是所有 intervals 中的最高價。
+        # - low_price 是所有 intervals 中的最低價。
+        # - total_volume 是所有 intervals 的成交量總和。
+
+        latest_interval_data = resampled_df.iloc[-1]
+        close_price = latest_interval_data['close']
+
+        # 整體高低價和總成交量應基於重採樣後的數據計算
+        high_price = resampled_df['high'].max()
+        low_price = resampled_df['low'].min()
+        total_volume = resampled_df['volume'].sum()
+
+        # 獲取前一日收盤價 (此邏輯可能需要根據 report_interval 調整，但目前保持不變)
+        # prev_close_price 的獲取邏輯，基於的是「前一個交易日」的收盤價，
+        # 這與 report_interval 的日內細分無關。
         prev_close_price = self.db_manager.query_previous_day_close(ticker, date_str, table_name)
 
         price_change_pct = 0.0
-        if prev_close_price is not None:
-            if prev_close_price != 0:
-                price_change_pct = ((close_price - prev_close_price) / prev_close_price) * 100
-            elif close_price > 0: # prev_close is 0, current_close > 0
-                price_change_pct = float('inf') # 表示極大變化或從0開始的增長
-        # 如果 prev_close_price is None (例如，新上市股票的第一天)，則 price_change_pct 保持 0.0
-
-        high_price = daily_data_df['high'].max()
-        low_price = daily_data_df['low'].min()
+        if prev_close_price is not None and prev_close_price != 0:
+            price_change_pct = ((close_price - prev_close_price) / prev_close_price) * 100
+        elif prev_close_price is not None and prev_close_price == 0 and close_price > 0:
+            price_change_pct = float('inf')
+        # 如果 prev_close_price is None，price_change_pct 保持 0.0
 
         volatility_range_pct = 0.0
-        if low_price != 0 : # 避免除以零
+        if low_price != 0:
             volatility_range_pct = ((high_price - low_price) / low_price) * 100
         elif high_price > 0: # low_price is 0, high_price > 0
             volatility_range_pct = float('inf')
 
-
-        total_volume = daily_data_df['volume'].sum()
-
         # 準備返回的結果
         analysis_result = {
             "status": "success",
-            "close": f"{close_price:.2f}",
+            "close": f"{close_price:.2f}" if pd.notna(close_price) else "N/A",
             "prev_close": f"{prev_close_price:.2f}" if prev_close_price is not None else "N/A",
             "change_pct": f"{price_change_pct:+.2f}%" if price_change_pct != float('inf') else "新生或極大變化",
-            "high": f"{high_price:.2f}",
-            "low": f"{low_price:.2f}",
+            "high": f"{high_price:.2f}" if pd.notna(high_price) else "N/A",
+            "low": f"{low_price:.2f}" if pd.notna(low_price) else "N/A",
             "range_pct": f"{volatility_range_pct:.2f}%" if volatility_range_pct != float('inf') else "極大波動或從0開始",
-            "volume": f"{total_volume:,.0f}"
+            "volume": f"{total_volume:,.0f}" if pd.notna(total_volume) else "N/A"
         }
-        # print(f"調試：分析引擎：標的 {ticker} 在日期 {date_str} 的分析結果: {analysis_result}")
+        # self.logger.debug(f"標的 {ticker} 在日期 {date_str} (顆粒度 {self.report_interval}) 的分析結果: {analysis_result}")
 
         # 直接定義數值型變量，用於計算和解讀
         numeric_change_pct = 0.0
@@ -92,16 +144,17 @@ class AnalysisEngine:
         if prev_close_price is not None:
             if prev_close_price != 0:
                 numeric_change_pct = ((close_price - prev_close_price) / prev_close_price) * 100
-            elif close_price > 0:
+            elif close_price > 0: # prev_close is 0, current_close > 0
                 numeric_change_pct = float('inf')
 
-        # high_price, low_price 已在 analysis_result 計算前定義
-        # total_volume 已在 analysis_result 計算前定義
+        # high_price, low_price, total_volume 已從 resampled_df 計算得到
 
-        if low_price != 0 :
+        if low_price != 0 and pd.notna(low_price) and pd.notna(high_price):
             numeric_vol_range_pct = ((high_price - low_price) / low_price) * 100
-        elif high_price > 0:
-            numeric_vol_range_pct = float('inf')
+        elif pd.notna(high_price) and high_price > 0: # low_price is 0 or NaN, high_price > 0
+             numeric_vol_range_pct = float('inf')
+        else: # low_price is 0 or NaN, high_price is 0 or NaN
+            numeric_vol_range_pct = 0.0
 
         # 準備用於解讀的輸入
         interpretation_input = {
