@@ -22,6 +22,7 @@ grpcio-status==1.71.2
 httplib2==0.22.0
 idna==3.10
 iniconfig==2.1.0
+Jinja2>=3.0 # 添加 Jinja2
 joblib==1.5.1
 multitasking==0.0.11
 narwhals==1.44.0

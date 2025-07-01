@@ -8,7 +8,7 @@
 
 ### 核心特性：
 
-*   **數據合約 (Data Contracts)**：應用程式內部流動的數據結構通過 `schemas.py` 中定義的 Pydantic 模型進行嚴格的「合約」定義。這確保了數據在各個處理階段都具有可被強制驗證的「形狀」，從 Daunting在早期暴露數據不匹配問題。
+*   **數據合約 (Data Contracts)**：應用程式內部流動的數據結構通過 `schemas.py` 中定義的 Pydantic 模型進行嚴格的「合約」定義。這確保了數據在各個處理階段都具有可被強制驗證的「形狀」，從而在早期暴露數據不匹配問題。
 *   **應用容器 (App Container)**：`app.py` 作為此應用的唯一標準化外部執行入口。它負責解析命令列參數，並以「流水線 (Pipeline)」的方式依序調用各個功能模組。
 *   **獨立驗收 (Test Probe)**：`_test_harness.py` 提供了一個外部驗收工具，能夠模擬真實的執行環境，對應用容器進行端到端的測試。
 
@@ -88,11 +88,12 @@ python -m apps.stress_report_app._test_harness
 *   **Pandas (`pandas`)**: 主要用於時間序列數據的處理、操作和分析。
 *   **Plotly (`plotly`)**: 負責生成報告中所需的互動式數據視覺化圖表。
 *   **PyYAML (`PyYAML`)**: 用於載入和解析 YAML 格式的設定檔 (`config/project_config.yaml`)。
-*   **Requests (`requests`)**: 用於從網路獲取數據 (例如 NY Fed 的 Excel 檔案)。
+*   **Requests (`requests`)**: 用於從網路獲取數據。
 *   **FredAPI (`fredapi`)**: 用於與 FRED (Federal Reserve Economic Data) API 交互以獲取經濟數據。
 *   **yfinance (`yfinance`)**: 用於從 Yahoo Finance API 獲取市場數據。
 *   **Openpyxl**: 作為 Pandas 讀取 `.xlsx` 檔案的底層引擎。
 *   **curl_cffi**: 用於模擬瀏覽器行為進行 HTTP 請求，特別是在嘗試解決 NY Fed 數據下載問題時引入。
+*   **Jinja2**: 用於渲染 HTML 報告模板。
 
 詳細的依賴列表請參見專案根目錄下的 `requirements.txt` 文件。
 
@@ -106,6 +107,7 @@ python -m apps.stress_report_app._test_harness
     *   初始執行 `_test_harness.py` 時發現缺少 `pandas` 依賴。通過安裝根目錄 `requirements.txt` 解決。
     *   後續發現解析 NY Fed Excel 檔案時缺少 `openpyxl` 依賴。將其添加到 `requirements.txt` 並安裝後解決。
     *   為嘗試改進 NY Fed 數據獲取，引入 `curl_cffi` 並加入 `requirements.txt`。
+    *   為解決 HTML 報告渲染問題，引入 `Jinja2` 並加入 `requirements.txt`。
 
 2.  **Pydantic 配置與錯誤處理修正**：
     *   `app.py` 在載入 `project_config.yaml` 時，由於 `AppConfig` Pydantic 模型預設不允許額外欄位 (`extra='forbid'`)，而配置文件中存在 `runner_settings`，導致 `ValidationError`。已修改 `schemas.py` 中的 `AppConfig.Config`，將 `extra` 設置為 `'ignore'` 以兼容。
@@ -137,13 +139,24 @@ python -m apps.stress_report_app._test_harness
         *   因此，`Dealer_Stress_Index` 和 `Stress_Index_MACD_Hist` 也成功計算出來（儘管壓力指數仍缺少 NY Fed 相關的兩個成分）。
     *   **結論**：`calculator.py` 的核心計算邏輯在獲得有效輸入數據（且數據量足夠進行滾動計算）時是正確的。
 
-6.  **`app.py` 端到端流程驗證**：
-    *   在解決了上述依賴、配置和核心模組的數據問題後，通過修改 `_test_harness.py` 中的 `test_app_container_execution` 函數（使其請求 HTML 輸出並使用擴展日期範圍），成功模擬了 `app.py` 的完整執行流程。
-    *   `app.py` 能夠正確接收命令列參數，協調 `data_fetcher`（獲取 FRED 和 Yahoo 數據）、`calculator`（計算指標）、`visualizer`（生成圖表）和 `reporter`（編譯報告），最終成功在 `data_workspace/output/reports/` 目錄下生成 HTML 格式的壓力報告。
+6.  **`reporter.py` 修正與驗證 (HTML 報告渲染問題)**：
+    *   **問題定位**：通過 Colab 截圖發現，生成的 HTML 報告中圖表部分顯示的是 Jinja2 模板原始碼，表明模板渲染失敗。
+    *   **原因分析**：`reporter.py` 中原有的 `render_template_simple` 函數是一個簡易的字串替換實現，並非真正的 Jinja2 渲染。且 `DEFAULT_REPORT_TEMPLATE_HTML` 中的 CSS 部分存在與 Jinja2 語法衝突的雙大括號。
+    *   **修復**：
+        *   在 `requirements.txt` 中添加 `Jinja2` 依賴並安裝。
+        *   修改 `reporter.py`，導入 `jinja2.Template`。
+        *   移除 `render_template_simple` 函數。
+        *   修改 `compile_html_report` 輔助函數，使用 `Template(DEFAULT_REPORT_TEMPLATE_HTML).render(context)` 進行標準的 Jinja2 渲染。
+        *   修改 `DEFAULT_REPORT_TEMPLATE_HTML` 模板，使用 `{% raw %}` 和 `{% endraw %}` 包裹 `<style>` 標籤內容，並修正 CSS 中錯誤的雙大括號為單大括號，以避免與 Jinja2 語法衝突。
+    *   **驗證**：修復後，再次通過 `_test_harness.py` 執行 `app.py` 生成 HTML 報告，確認模板被正確渲染，圖表能夠正常顯示（在數據允許的情況下）。
+
+7.  **`app.py` 端到端流程驗證**：
+    *   在解決了上述依賴、配置、核心模組數據及報告渲染問題後，通過 `_test_harness.py` 中的 `test_app_container_execution` 函數，成功模擬了 `app.py` 的完整執行流程。
+    *   `app.py` 能夠正確接收命令列參數，協調 `data_fetcher`、`calculator`、`visualizer` 和 `reporter`，最終成功在 `data_workspace/output/reports/` 目錄下生成 HTML 格式的壓力報告。
 
 ### 總結與後續建議：
 
-*   `stress_report_app` 的核心數據處理和計算模組 (`data_fetcher.py`, `calculator.py`) 以及應用主流程 (`app.py`) 在本次 SOP4 驗證後，功能更加健全和可靠（除 NY Fed 數據源直接下載問題外）。
+*   `stress_report_app` 的核心數據處理、計算模組以及應用主流程和報告生成功能，在本次 SOP4 驗證後，功能更加健全和可靠（除 NY Fed 數據源直接下載問題外）。
 *   `_test_harness.py` 已被大幅增強，可以作為一個有效的工具來獨立驗證核心模組功能和模擬完整的應用執行。
 *   **最主要的遺留問題是 NY Fed Excel 檔案的獲取**。當前 URL 返回 HTML 頁面，即使嘗試使用 `curl_cffi` 模擬瀏覽器也未能直接獲取到 Excel 檔案。建議後續：
     1.  人工深入分析 NY Fed 網站，嘗試找到穩定的直接下載連結或理解其下載機制（可能涉及 JavaScript 或特定請求標頭/流程）。

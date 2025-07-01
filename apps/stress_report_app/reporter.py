@@ -30,6 +30,9 @@ except ImportError:
     GOOGLE_GENERATIVEAI_AVAILABLE = False
     genai = None
 
+# 導入 Jinja2
+from jinja2 import Environment, select_autoescape, Template
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_REPORT_TEMPLATE_HTML = """
@@ -39,18 +42,20 @@ DEFAULT_REPORT_TEMPLATE_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ report_title }}</title>
+    {% raw %}
     <style>
-        body {{ font-family: 'Arial', 'Noto Sans CJK TC', sans-serif; margin: 20px; line-height: 1.6; }}
-        h1, h2, h3 {{ color: #333; }}
-        .container {{ max-width: 1000px; margin: auto; background: #f9f9f9; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
-        .chart-container {{ margin-bottom: 30px; }}
-        .section {{ margin-bottom: 20px; }}
-        .gemini-analysis {{ background-color: #eef7ff; border-left: 5px solid #2196F3; padding: 15px; margin-top: 15px; }}
-        .error-message {{ color: red; font-style: italic; }}
-        table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
-        th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }}
-        th {{ background-color: #f2f2f2; }}
+        body { font-family: 'Arial', 'Noto Sans CJK TC', sans-serif; margin: 20px; line-height: 1.6; }
+        h1, h2, h3 { color: #333; }
+        .container { max-width: 1000px; margin: auto; background: #f9f9f9; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .chart-container { margin-bottom: 30px; }
+        .section { margin-bottom: 20px; }
+        .gemini-analysis { background-color: #eef7ff; border-left: 5px solid #2196F3; padding: 15px; margin-top: 15px; }
+        .error-message { color: red; font-style: italic; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f2f2f2; }
     </style>
+    {% endraw %}
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body>
@@ -97,59 +102,7 @@ DEFAULT_REPORT_TEMPLATE_HTML = """
 </html>
 """
 
-# 簡易的模板渲染函式 (不依賴 Jinja2)
-def render_template_simple(template_str: str, context: Dict[str, Any]) -> str:
-    """簡易的模板渲染"""
-    for key, value in context.items():
-        # 處理 {{ key }}
-        template_str = template_str.replace(f"{{{{ {key} }}}}", str(value))
-        # 處理 {{ key | safe }}
-        template_str = template_str.replace(f"{{{{ {key} | safe }}}}", str(value))
-
-    # 簡易的 for 循環處理 (僅支持一層 charts_html.items())
-    import re
-    loop_match = re.search(r"{% for (\w+), (\w+) in charts_html.items() %}(.*?){% endfor %}", template_str, re.DOTALL)
-    if loop_match:
-        item_name_key = loop_match.group(1) # chart_name
-        item_html_key = loop_match.group(2) # chart_html
-        loop_content_template = loop_match.group(3)
-
-        charts_html_items = context.get('charts_html', {})
-        all_looped_content = []
-        for idx, (chart_name_val, chart_html_val) in enumerate(charts_html_items.items()):
-            loop_item_context = {
-                item_name_key: chart_name_val,
-                item_html_key: chart_html_val,
-                'loop.index': idx + 1 # 模擬 loop.index
-            }
-            # 渲染循環內部
-            rendered_loop_content = loop_content_template
-            for item_key, item_val in loop_item_context.items():
-                 rendered_loop_content = rendered_loop_content.replace(f"{{{{ {item_key} }}}}", str(item_val))
-                 rendered_loop_content = rendered_loop_content.replace(f"{{{{ {item_key} | safe }}}}", str(item_val))
-
-            # 處理 chart_titles.get(chart_name, chart_name)
-            chart_titles = context.get('chart_titles', {})
-            actual_chart_title = chart_titles.get(chart_name_val, chart_name_val)
-            rendered_loop_content = rendered_loop_content.replace(f"{{{{ chart_titles.get({item_name_key}, {item_name_key}) }}}}", actual_chart_title)
-
-            all_looped_content.append(rendered_loop_content)
-
-        template_str = template_str.replace(loop_match.group(0), "".join(all_looped_content))
-
-    # 簡易的 if 條件處理
-    if_gemini_match = re.search(r"{% if gemini_analysis_html %}(.*?){% elif gemini_error %}(.*?){% endif %}", template_str, re.DOTALL)
-    if if_gemini_match:
-        gemini_html_content = context.get('gemini_analysis_html')
-        gemini_error_content = context.get('gemini_error')
-        if gemini_html_content:
-            template_str = template_str.replace(if_gemini_match.group(0), if_gemini_match.group(1))
-        elif gemini_error_content:
-            template_str = template_str.replace(if_gemini_match.group(0), if_gemini_match.group(2))
-        else: # 都沒有，則移除整個 if 結構
-            template_str = template_str.replace(if_gemini_match.group(0), "")
-
-    return template_str
+# 移除了 render_template_simple 函數，將使用 Jinja2
 
 
 def generate_text_analysis(
@@ -324,8 +277,10 @@ def compile_html_report(
     html_template_str = DEFAULT_REPORT_TEMPLATE_HTML
 
     try:
-        # 簡易模板渲染
-        rendered_html = render_template_simple(html_template_str, final_context)
+        # 使用 Jinja2 進行模板渲染
+        # 由於模板是字串，直接用 Template 類
+        template = Template(html_template_str)
+        rendered_html = template.render(final_context)
 
         with open(html_report_path, 'w', encoding='utf-8') as f:
             f.write(rendered_html)
