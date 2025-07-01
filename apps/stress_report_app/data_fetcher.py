@@ -351,17 +351,13 @@ def get_vix_index(
 def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.Logger] = None) -> Optional[pd.Series]:
     current_logger = logger_instance if logger_instance else logging.getLogger(__name__)
 
-    # 從 AppConfig 結構化物件獲取配置，或者如果傳入的是字典則按舊方式獲取
-    if hasattr(config, 'data_fetching') and hasattr(config.data_fetching, 'nyfed_data_urls'):
-        # 假設 config 是 Pydantic AppConfig 模型
-        ny_fed_positions_urls = config.data_fetching.nyfed_data_urls
-        sbp_cols_config = config.data_fetching.sbp_cols_config
-        current_logger.debug("從 AppConfig Pydantic 模型獲取 NY Fed 設定。")
-    else:
-        # 保持對舊式字典配置的兼容性
-        ny_fed_positions_urls = config.get('data_fetching', {}).get('nyfed_data_urls', [])
-        sbp_cols_config = config.get('data_fetching', {}).get('sbp_cols_config', {})
-        current_logger.debug("從字典型態的 config 獲取 NY Fed 設定。")
+    # 從 AppConfig 結構化物件獲取配置
+    # config 參數在從 fetch_all_data 調用時是完整的 AppConfig Pydantic 模型實例
+    # 因此，我們直接訪問其屬性，並對 sbp_cols_config 進行 model_dump()
+    ny_fed_positions_urls = config.data_fetching.nyfed_data_urls
+    sbp_cols_config_model = config.data_fetching.sbp_cols_config # 這是 SbpColsConfig Pydantic 模型
+    sbp_cols_dict = sbp_cols_config_model.model_dump() # 將其轉換為字典以方便查找
+    current_logger.debug(f"從 AppConfig Pydantic 模型獲取 NY Fed 設定。sbp_cols_dict: {sbp_cols_dict}")
 
 
     current_logger.info(f"開始從 {len(ny_fed_positions_urls)} 個 URL 獲取 NY Fed 持有量數據。")
@@ -408,89 +404,97 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
             current_logger.debug(f"文件 {file_source_name}: 正在解析...")
             data_positions_long = None
             header_to_use = None
-            # 根據 '一級交易pro.py' 的經驗，針對性設定 header
-            if "sbn" in url_str.lower(): # SOMA Holdings Net (SBN)
-                header_to_use = 3
-                current_logger.info(f"檢測到 SBN 類型檔案，嘗試使用 header={header_to_use} (0-indexed)。")
-            elif "sbp" in url_str.lower(): # Securities Held Outright by Primary Dealers (SBP)
-                header_to_use = 4 # SBP 通常 header=4，但具體需確認
-                current_logger.info(f"檢測到 SBP 類型檔案，嘗試使用 header={header_to_use} (0-indexed)。")
-            # 可以為其他已知的 NY Fed Excel 格式添加更多 elif 條件
+            # 根據 Colab 日誌，新的 API URL 返回的 Excel 表頭在第1行，日期列為 'As Of Date'
+            # Pandas header 參數是 0-indexed，所以 header=0
+            header_to_use = 0
+            date_col_name_expected = 'As Of Date'
+            # 假設序列名列為 'Series ID' 或 'Mnemonic' (常見名稱)，值列為 'Value'
+            # 這些需要根據實際下載的 Excel 檔案進行確認和調整
+            ts_col_names_possible = ['series id', 'mnemonic', 'time series', 'series name']
+            val_col_names_possible = ['value', 'value (millions)', 'amount']
 
-            if header_to_use is not None:
-                try:
-                    # 假設日期通常是第一列，並且是索引
-                    # 嘗試直接讀取，如果失敗，會在下面的通用 except 中捕獲
-                    data_positions_long = pd.read_excel(excel_content, header=header_to_use, index_col=0, parse_dates=True, engine='openpyxl')
-                    current_logger.info(f"文件 {file_source_name}: 使用 header={header_to_use} 嘗試讀取成功。")
-                    # 由於 index_col=0，日期列名就是索引名
-                    date_col_name_parsed = data_positions_long.index.name
-                    if date_col_name_parsed is None: # 如果索引沒有名字，嘗試獲取第一個欄位名作為日期列的代理
-                        df_peek_cols = pd.read_excel(excel_content, header=header_to_use, nrows=0, engine='openpyxl').columns
-                        if len(df_peek_cols) > 0:
-                             date_col_name_parsed = df_peek_cols[0] # 通常是 'Effective Date' 或類似
-                        else:
-                             date_col_name_parsed = "Date" # 預設
-                        current_logger.info(f"索引無名稱，日期列名推斷為: '{date_col_name_parsed}'")
+            data_positions_long = None
+            date_col_name_parsed = None
 
-                except Exception as e_read:
-                    current_logger.warning(f"文件 {file_source_name}: 使用指定 header={header_to_use} 讀取失敗: {e_read}。將嘗試通用解析。")
-                    excel_content.seek(0) # 重置以便後續嘗試
-                    data_positions_long = None # 確保置空
+            try:
+                current_logger.info(f"文件 {file_source_name}: 嘗試使用 header={header_to_use} 和日期列 '{date_col_name_expected}' 進行解析...")
+                # 先讀取表頭來確定實際的列名
+                df_peek = pd.read_excel(excel_content, header=header_to_use, nrows=5, engine='openpyxl')
+                excel_content.seek(0) # 重置指針
 
-            # 如果針對性讀取失敗，或者沒有匹配的類型，則退回之前的自動檢測（作為備案）
-            if data_positions_long is None:
-                current_logger.info(f"文件 {file_source_name}: 未進行針對性表頭讀取或讀取失敗，嘗試通用自動檢測表頭...")
-                header_row_detected = None
-                date_col_name_parsed = None
-                possible_headers = [3, 4, 0, 1, 2] # 擴大自動檢測範圍
+                actual_date_col = None
+                actual_ts_col = None
+                actual_val_col = None
 
-                for h_val in possible_headers:
-                    try:
-                        df_peek = pd.read_excel(excel_content, header=h_val, nrows=5, engine='openpyxl')
-                        excel_content.seek(0)
-                        cols_lower = [str(c).lower() for c in df_peek.columns]
-                        ts_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['time series', 'series name']), None)
-                        val_col_cand = next((col for col in df_peek.columns if str(col).lower() in ['value (millions)', 'value', 'amount']), None) # 增加 'amount'
-                        date_col_cand_for_idx = None
-                        if len(df_peek.columns) > 0:
-                            first_col_name_str = str(df_peek.columns[0]).lower()
-                            if 'effective date' in cols_lower or 'date' in cols_lower:
-                                date_col_cand_for_idx = df_peek.columns[cols_lower.index('effective date' if 'effective date' in cols_lower else 'date')]
-                            elif not pd.to_datetime(df_peek.iloc[:, 0], errors='coerce').isna().all():
-                                date_col_cand_for_idx = df_peek.columns[0]
+                cols_lower = [str(c).lower() for c in df_peek.columns]
+                current_logger.debug(f"文件 {file_source_name}: 檢測到的列名 (小寫): {cols_lower}")
 
-                        if ts_col_cand and val_col_cand and date_col_cand_for_idx:
-                            header_row_detected = h_val
-                            date_col_name_parsed = date_col_cand_for_idx
-                            data_positions_long = pd.read_excel(excel_content, header=header_row_detected,
-                                                                index_col=date_col_name_parsed,
-                                                                parse_dates=True, engine='openpyxl')
-                            current_logger.info(f"文件 {file_source_name}: 自動檢測到有效表頭在第 {header_row_detected + 1} 行, 日期列: '{date_col_name_parsed}'.")
-                            excel_content.seek(0)
-                            break
-                    except Exception as e_auto:
-                        current_logger.debug(f"自動檢測 header={h_val} 失敗: {e_auto}")
-                        excel_content.seek(0)
-                        continue
+                # 查找日期列
+                if date_col_name_expected.lower() in cols_lower:
+                    actual_date_col = df_peek.columns[cols_lower.index(date_col_name_expected.lower())]
 
-            if data_positions_long is None:
-                current_logger.warning(f"文件 {file_source_name}: 所有嘗試均無法解析 Excel。跳過此文件。")
-                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': '解析失敗 (所有表頭嘗試均失敗)'})
+                # 查找 Time Series 列
+                for ts_name in ts_col_names_possible:
+                    if ts_name in cols_lower:
+                        actual_ts_col = df_peek.columns[cols_lower.index(ts_name)]
+                        break
+
+                # 查找 Value 列
+                for val_name in val_col_names_possible:
+                    if val_name in cols_lower:
+                        actual_val_col = df_peek.columns[cols_lower.index(val_name)]
+                        break
+
+                if actual_date_col and actual_ts_col and actual_val_col:
+                    current_logger.info(f"文件 {file_source_name}: 成功匹配到列 - 日期:'{actual_date_col}', 序列:'{actual_ts_col}', 值:'{actual_val_col}'")
+                    data_positions_long = pd.read_excel(excel_content, header=header_to_use,
+                                                        usecols=[actual_date_col, actual_ts_col, actual_val_col],
+                                                        engine='openpyxl')
+                    # 重命名列以進行標準化處理
+                    data_positions_long.rename(columns={
+                        actual_date_col: 'Date', # 標準化日期列名
+                        actual_ts_col: 'Time Series', # 標準化序列名列
+                        actual_val_col: 'Value' # 標準化值列
+                    }, inplace=True)
+                    date_col_name_parsed = 'Date' # 已標準化
+                    current_logger.info(f"文件 {file_source_name}: 使用 header={header_to_use} 和指定列成功讀取。")
+                else:
+                    missing_cols_info = []
+                    if not actual_date_col: missing_cols_info.append(f"日期列(預期'{date_col_name_expected}')")
+                    if not actual_ts_col: missing_cols_info.append(f"序列名列(嘗試{ts_col_names_possible})")
+                    if not actual_val_col: missing_cols_info.append(f"值列(嘗試{val_col_names_possible})")
+                    current_logger.warning(f"文件 {file_source_name}: 未能找到所有必需的列: {', '.join(missing_cols_info)}。")
+
+            except Exception as e_parse:
+                current_logger.warning(f"文件 {file_source_name}: 解析 Excel 時發生錯誤: {e_parse}。跳過此文件。")
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'解析失敗: {e_parse}'})
                 continue
 
+            if data_positions_long is None or data_positions_long.empty:
+                current_logger.warning(f"文件 {file_source_name}:未能從Excel中讀取到有效數據或匹配到所需列。跳過此文件。")
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': '解析後無數據或缺少關鍵列'})
+                continue
+
+            # --- 後續處理與之前類似，但使用標準化後的列名 'Date', 'Time Series', 'Value' ---
             current_logger.debug(f"文件 {file_source_name}: 正在清理長格式數據...")
-            if not isinstance(data_positions_long.index, pd.DatetimeIndex):
-                 data_positions_long.index = pd.to_datetime(data_positions_long.index, errors='coerce')
-                 data_positions_long.dropna(subset=[data_positions_long.index.name], inplace=True)
+            data_positions_long['Date'] = pd.to_datetime(data_positions_long['Date'], errors='coerce')
+            data_positions_long.dropna(subset=['Date', 'Time Series', 'Value'], inplace=True)
+            data_positions_long.set_index('Date', inplace=True)
             data_positions_long.index = data_positions_long.index.normalize()
 
-            actual_ts_col_final = next((col for col in data_positions_long.columns if str(col).lower() in ['time series', 'series name']), None)
-            actual_val_col_final = next((col for col in data_positions_long.columns if str(col).lower() in ['value (millions)', 'value']), None)
+            # Pivot 時的列名也已標準化
+            actual_ts_col_final = 'Time Series'
+            actual_val_col_final = 'Value'
+            # date_col_name_parsed 在 pivot 時會是索引名，即 'Date'
 
-            if not actual_ts_col_final or not actual_val_col_final:
-                current_logger.warning(f"文件 {file_source_name}: 清理後仍缺少 'Time Series' 或 'Value' 欄位。跳過。")
-                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': "缺少 'Time Series' 或 'Value' 欄位"})
+            # data_positions_long[actual_val_col_final] = pd.to_numeric(data_positions_long[actual_val_col_final], errors='coerce') # 已在讀取時處理，或在pivot前處理
+            # initial_rows_count = len(data_positions_long)
+            # data_positions_long.dropna(subset=[actual_val_col_final, actual_ts_col_final], inplace=True)
+            # current_logger.debug(f"文件 {file_source_name}: 清理完成 (移除 {initial_rows_count - len(data_positions_long)} 行無效數據)。")
+
+            if data_positions_long.empty: # 如果清理後為空
+                current_logger.warning(f"文件 {file_source_name}: 清理後無有效數據。跳過。")
+                failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': '清理後無數據'})
                 continue
 
             data_positions_long[actual_val_col_final] = pd.to_numeric(data_positions_long[actual_val_col_final], errors='coerce')
@@ -521,18 +525,28 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
 
             target_cols_list_for_sum = []
             source_type_id = "未知"
-            if 'SBN' in url.upper():
+            url_upper_for_rules = url_str.upper() # 使用 url_str 進行規則匹配
+
+            if 'SBN' in url_upper_for_rules:
                  source_type_id = "SBN"
                  target_cols_list_for_sum = [c for c in data_positions_wide.columns if isinstance(c, str) and c.startswith('PDPOSGSC-')]
-            else:
-                for config_key_from_param, cols_in_config in sbp_cols_config.items():
-                    if config_key_from_param.upper() in url.upper():
-                        source_type_id = config_key_from_param
-                        target_cols_list_for_sum = cols_in_config
-                        break
+            else: # 假設其他都是 SBP 類型，需要從 sbp_cols_dict 查找 (sbp_cols_dict 是 sbp_cols_config_model.model_dump() 的結果)
+                matched_sbp_key = None
+                if "SBP2013" in url_upper_for_rules:
+                    matched_sbp_key = "SBP2013"
+                elif "SBP2001" in url_upper_for_rules:
+                    matched_sbp_key = "SBP2001"
+                # 可以添加更多 SBP 年份或類型的判斷
+
+                if matched_sbp_key and matched_sbp_key in sbp_cols_dict: # 在字典中查找
+                    source_type_id = matched_sbp_key
+                    target_cols_list_for_sum = sbp_cols_dict[matched_sbp_key]
+                elif "SBP" in url_upper_for_rules and "SBP" in sbp_cols_dict: # 如果有通用的 "SBP" 鍵作為備案
+                    source_type_id = "SBP_Generic"
+                    target_cols_list_for_sum = sbp_cols_dict["SBP"]
 
             if not target_cols_list_for_sum:
-                 current_logger.warning(f"文件 {file_source_name}: 未找到用於加總的目標欄位規則 ({source_type_id})。跳過加總。")
+                 current_logger.warning(f"文件 {file_source_name}: 未找到用於加總的目標欄位規則 ({source_type_id})。URL: {url_str}。sbp_cols_dict: {sbp_cols_dict}。跳過加總。")
                  failed_files_info.append({'file': file_source_name, 'url': url_str, 'reason': f'無加總規則 ({source_type_id})'})
                  continue
 
@@ -723,7 +737,8 @@ def fetch_all_data(
         merged_df = merged_df.join(nyfed_df_temp, how='left')
         # NY Fed 數據通常是週頻或不規則，需要向前填充以匹配業務日
         if 'Total_Gross_Positions_Millions' in merged_df.columns:
-            merged_df['Total_Gross_Positions_Millions'].ffill(inplace=True)
+            # 使用建議的 .ffill() 方式避免 FutureWarning
+            merged_df['Total_Gross_Positions_Millions'] = merged_df['Total_Gross_Positions_Millions'].ffill()
     else:
         merged_df['Total_Gross_Positions_Millions'] = np.nan
 

@@ -31,8 +31,11 @@ class YahooTickersMapConfig(BaseModel):
 
 class SbpColsConfig(BaseModel):
     """NY Fed SBP/SBN 數據加總欄位設定"""
-    SBP: List[str] = Field(default_factory=list, description="適用於 SBP (Securities Held Outright by Primary Dealers) 檔案的加總欄位列表")
+    SBP: List[str] = Field(default_factory=list, description="適用於 SBP (Securities Held Outright by Primary Dealers) 檔案的通用加總欄位列表 (備案)")
     SBN: List[str] = Field(default_factory=list, description="適用於 SBN (SOMA Holdings Net) 檔案的加總欄位列表 (通常 SBN 會自動檢測 PDPOSGSC-)")
+    # 允許其他如 SBP2013, SBP2001 等鍵存在
+    class Config:
+        extra = 'allow'
 
 class DataFetchingConfig(BaseModel):
     """數據獲取階段的詳細設定"""

@@ -13,48 +13,50 @@ data_fetching:
     VIX: '^VIX'
     TLT_Close: 'TLT'
   nyfed_data_urls: [
-    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2023.xlsx",
-    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2022.xlsx",
-    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2021.xlsx",
-    "https://www.newyorkfed.org/medialibrary/media/markets/omo/omo-data-archive/historical-soma-holdings/sbn/sbn_historical_archive_2020.xlsx"
-  ] # 更新為範例 URL，實際應為有效的 URL 列表
-  # sbp_cols_config 是 NY Fed 數據解析需要的，雖然 fetch_nyfed_data 內部有預期，但 project_config.yaml 裡最好也定義
+      "https://markets.newyorkfed.org/api/pd/get/SBN2024/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx",
+      "https://markets.newyorkfed.org/api/pd/get/SBN2022/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11L21_PDPOSGSC-G21.xlsx",
+      "https://markets.newyorkfed.org/api/pd/get/SBN2015/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx",
+      "https://markets.newyorkfed.org/api/pd/get/SBN2013/timeseries/PDPOSGSC-L2_PDPOSGSC-G2L3_PDPOSGSC-G3L6_PDPOSGSC-G6L7_PDPOSGSC-G7L11_PDPOSGSC-G11.xlsx",
+      "https://markets.newyorkfed.org/api/pd/get/SBP2013/timeseries/PDPUSGCS3LNOP_PDPUSGCS36NOP_PDPUSGCS611NOP_PDPUSGCSM11NOP.xlsx",
+      "https://markets.newyorkfed.org/api/pd/get/SBP2001/timeseries/PDPUSGCS5LNOP_PDPUSGCS5MNOP.xlsx"
+  ]
   sbp_cols_config: {
-    "SBP": [ # Securities Held Outright by Primary Dealers
-        "US Treasury Coupons",
-        "Federal Agency and GSE MBS",
-        "Agency Commercial Mortgage-Backed Securities",
-        "Federal Agency and GSE Debt",
-        "Corporate Bonds",
-        "Municipal Securities",
-        "Equities",
-        "Other"
+    # SBN 數據的加總邏輯在 data_fetcher.py 中是基於欄位名 (PDPOSGSC-) 的，所以這裡 SBN 列表可以為空
+    "SBN": [],
+    "SBP2013": [
+        "PDPUSGCS3LNOP",
+        "PDPUSGCS36NOP",
+        "PDPUSGCS611NOP",
+        "PDPUSGCSM11NOP"
     ],
-    "SBN": [ # SOMA Holdings (System Open Market Account) - Net
-        # fetch_nyfed_data 中的邏輯是 if 'SBN' in url.upper(): target_cols_list_for_sum = [c for c in data_positions_wide.columns if isinstance(c, str) and c.startswith('PDPOSGSC-')]
+    "SBP2001": [
+        "PDPUSGCS5LNOP",
+        "PDPUSGCS5MNOP"
     ]
   }
 
 calculation_params:
-  stress_index_weights:
+  stress_index_weights: # 這些是 calculator.py 中 component_mapping 使用的鍵
     sofr_dev: 0.20
     spread_inv: 0.20
-    gross_pos: 0.15
-    move: 0.20
-    vix: 0.15
-    pos_res_ratio: 0.10 # 權重總和為 1.0
+    gross_pos: 0.15     # 對應 Total_Gross_Positions_Millions
+    move: 0.20          # 對應 Volatility_Index
+    vix: 0.15           # 對應 VIX
+    pos_res_ratio: 0.10 # 對應 Pos_Res_Ratio
   macd_fast_period: 12
   macd_slow_period: 26
   macd_signal_period: 9
   rolling_window_days: 252
   smoothing_window_stress_index: 5
-  threshold_ratio_color: 90.0 # 注意：schemas.py 中為 float
-  enable_macd_momentum_plot: true # 根據 schemas.py 預設為 False，但測試時可以打開
-  weights: # 重複了 stress_index_weights，根據 schemas.py，這裡應該是 weights
-    sofr_dev: 0.20
-    spread_inv: 0.20
-    gross_pos: 0.15
-    move: 0.20
+  threshold_ratio_color: 90.0
+  enable_macd_momentum_plot: true
+  weights: # 這個 'weights' 鍵與 stress_index_weights 重複，並且 schemas.py 中 CalculationParamsConfig 也只定義了一個 weights。應統一。
+           # 根據 calculator.py，它使用的是 config.get('weights', {})，所以下面的這個 weights 會被使用。
+           # 為了清晰，建議將 stress_index_weights 移除或與此處的 weights 統一。暫時保留，但優先使用此處的。
+    sofr_dev: 0.35      # 使用您提供的 PROJECT_CONFIG 中的權重
+    spread_inv: 0.10
+    gross_pos: 0.05
+    move: 0.25
     vix: 0.15
     pos_res_ratio: 0.10
   macd_params:
@@ -69,12 +71,9 @@ calculation_params:
 report_settings:
   report_title: "交易商每日壓力指數監控報告"
 
-gemini_config: # 可選，如果沒有 API Key 或不想用，可以註解掉或移除
-  model_name: "gemini-1.5-flash" # 或 gemini-pro
+gemini_config:
+  model_name: "gemini-1.5-flash"
   temperature: 0.6
-  # safety_settings: [] # 根據需要填寫
-  # top_p: 0.9
-  # top_k: 40
 
 visualization_params:
   plots_config:
@@ -82,28 +81,30 @@ visualization_params:
     Spread: true
     MOVE: true
     VIX: true
-    DealerPos: false
-    Reserves: false
+    DealerPos: true # 打開以查看 NY Fed 數據
+    Reserves: true
     StressIndex: true
-    Ratio: true # 打開 Pos/Res Ratio 圖表以供測試
-    MACD: true # 確保與 calculation_params.enable_macd_momentum_plot 一致
+    Ratio: true
+    MACD: true
     ETF: false
   chart_params:
     dashboard_main_name_html: "綜合市場壓力儀表板"
     main_plot_titles:
       SOFR: "SOFR 利率 (%)"
-      Spread: "利差 (10年期-2年期, 基點)" # 更正為基點
+      Spread: "利差 (10年期-2年期, 基點)"
       MOVE: "MOVE 波動率指數"
       VIX: "VIX 波動率指數"
       StressIndex: "交易商壓力指數 (0-100)"
       Ratio: "主要交易商持倉/準備金比率"
       MACD: "壓力指數 MACD 動能"
+      DealerPos: "NY Fed 一級交易商持有量 (百萬美元)" # 新增標題
+      Reserves: "銀行準備金 (百萬美元)"
   gauge_thresholds:
     high: 80
     medium: 60
     low: 30
 
-# Runner 設定
+# Runner 設定 (stress_report_app 不直接使用，但保留以符合 project_config.yaml 的完整性)
 runner_settings:
   max_concurrent_apps: 2
   python_executable: "python"

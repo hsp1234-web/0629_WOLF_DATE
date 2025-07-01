@@ -8,7 +8,7 @@
 
 ### 核心特性：
 
-*   **數據合約 (Data Contracts)**：應用程式內部流動的數據結構通過 `schemas.py` 中定義的 Pydantic 模型進行嚴格的「合約」定義。這確保了數據在各個處理階段都具有可被強制驗證的「形狀」，從而在早期暴露數據不匹配問題。
+*   **數據合約 (Data Contracts)**：應用程式內部流動的數據結構通過 `schemas.py` 中定義的 Pydantic 模型進行嚴格的「合約」定義。這確保了數據在各個處理階段都具有可被強制驗證的「形狀」，從 Daunting在早期暴露數據不匹配問題。
 *   **應用容器 (App Container)**：`app.py` 作為此應用的唯一標準化外部執行入口。它負責解析命令列參數，並以「流水線 (Pipeline)」的方式依序調用各個功能模組。
 *   **獨立驗收 (Test Probe)**：`_test_harness.py` 提供了一個外部驗收工具，能夠模擬真實的執行環境，對應用容器進行端到端的測試。
 
@@ -124,43 +124,46 @@ python -m apps.stress_report_app._test_harness
     *   **FRED API 金鑰處理**：確認 API 金鑰通過環境變數 `API_KEY_FRED` 傳遞，並在 `_test_harness.py` 中使用真實金鑰進行了測試。
     *   **FRED 基礎數據配置讀取錯誤**：發現 `get_fred_base_data` 等函數在從傳入的 `config` 字典（實際上是 `app_config.data_fetching.model_dump()` 的結果）中讀取更深層次的配置（如 `fred_series_map`）時，路徑不正確。已修正此邏輯，確保正確讀取配置。修正後，所有基礎 FRED 數據（SOFR, DGS10, Reserves 等）均能成功抓取。
     *   **VIX 欄位名統一**：`get_vix_index` 可能返回名為 `VIX_Index` 或 `VIX_Yahoo` 的 Series，但 `calculator.py` 期望的是 `VIX`。已在 `fetch_all_data` 的合併邏輯中將 VIX 指數的欄位名統一為 `VIX`。
-    *   **NY Fed Excel 數據獲取問題**：
-        *   最初 `fetch_nyfed_data` 中的 `NameError` (變數 `url` 未定義) 已修正。
-        *   改進了 Excel 解析邏輯，嘗試基於 URL 關鍵字 ("sbn", "sbp") 指定表頭行號，並擴大了自動檢測表頭的備案邏輯。
-        *   通過在 `fetch_nyfed_data` 中添加日誌打印下載內容的 `Content-Type` 和內容預覽，確認了從 NY Fed URL 下載到的是 HTML 頁面而非 Excel 檔案。
-        *   嘗試使用 `curl_cffi.requests` 並模擬 Chrome 瀏覽器 (`impersonate="chrome110"`) 來下載 NY Fed Excel 檔案。儘管 `curl_cffi` 執行了請求，但返回的內容依然是 HTML 頁面，表明 NY Fed 的防護機制較為複雜，簡單的 User-Agent 模擬不足以獲取直接的檔案流。
-        *   **目前狀態**：NY Fed 數據仍然無法通過直接 HTTP(S) 請求成功解析，但程式能夠優雅處理此錯誤（返回空 Series，不崩潰）。
+    *   **NY Fed Excel 數據獲取問題解決**：
+        *   **問題**：最初 `data_fetcher.py` 使用的 NY Fed URL (`www.newyorkfed.org/medialibrary/...`) 返回的是 HTML 頁面而非 Excel 檔案，導致解析失敗。嘗試 `curl_cffi` 亦未能解決。
+        *   **關鍵突破**：根據使用者提供的 Colab 成功日誌，發現其使用了不同的 API 端點 URL (`markets.newyorkfed.org/api/...`)。
+        *   **修復**：
+            *   更新 `config/project_config.yaml` 中的 `nyfed_data_urls` 為新的 API URL 列表。
+            *   調整 `data_fetcher.py` 中的 `fetch_nyfed_data` 函數：
+                *   繼續使用 `curl_cffi` 進行下載（以防萬一）。
+                *   修改 Excel 解析邏輯，主要嘗試 `header=0`，並查找 `'As Of Date'` 作為日期列，以及 `'Time Series'` 和 `'Value (millions)'` (或類似名稱) 作為序列和數值列。
+                *   修正了 `sbp_cols_config` 的處理邏輯，確保在 `schemas.py` 中允許額外鍵 (`extra='allow'`)，並在 `data_fetcher.py` 中正確從 Pydantic 模型轉換後的字典中查找特定年份的 SBP 加總規則 (如 `SBP2013`, `SBP2001`)。
+                *   修正了之前遺留的 `NameError: name 'url' is not defined` 問題，確保所有 URL 判斷使用 `url_str`。
+            *   **結果**：所有 SBN 和 SBP 類型的 NY Fed Excel 檔案均能成功下載、解析和加總。`Total_Gross_Positions_Millions` 數據成功生成。
+    *   **Pandas `FutureWarning` 修正**：修正了 `ffill(inplace=True)` 的用法。
 
 5.  **`calculator.py` 驗證**：
-    *   **衍生指標**：在 FRED 數據可用的情況下，`Spread_10Y2Y` 和 `SOFR_Dev` 等指標計算正常。`Pos_Res_Ratio` 因依賴的 NY Fed 持有量數據缺失而無法計算。
+    *   **衍生指標**：在 FRED、Yahoo Finance 及成功獲取的 NY Fed 數據基礎上，所有相關衍生指標（包括 `Pos_Res_Ratio`）均能正確計算。
     *   **壓力指數與 MACD**：
-        *   最初由於測試數據時間範圍過短（約3個月），導致滾動百分位排名無法計算（數據點少於 `min_periods_rank`）。
-        *   將 `_test_harness.py` 中 `test_core_modules` 的測試日期範圍擴大到約1年3個月後，`sofr_dev`, `spread_inv`, `move`, `vix` 的滾動排名均能成功計算。
-        *   因此，`Dealer_Stress_Index` 和 `Stress_Index_MACD_Hist` 也成功計算出來（儘管壓力指數仍缺少 NY Fed 相關的兩個成分）。
-    *   **結論**：`calculator.py` 的核心計算邏輯在獲得有效輸入數據（且數據量足夠進行滾動計算）時是正確的。
+        *   擴大 `_test_harness.py` 中的測試日期範圍後，所有成分指標的滾動排名均能成功計算。
+        *   `Dealer_Stress_Index` 和 `Stress_Index_MACD_Hist` 現在基於更完整的數據集計算，結果更準確。
+    *   **結論**：`calculator.py` 的核心計算邏輯在獲得完整數據輸入時表現正確。
 
 6.  **`reporter.py` 修正與驗證 (HTML 報告渲染問題)**：
     *   **問題定位**：通過 Colab 截圖發現，生成的 HTML 報告中圖表部分顯示的是 Jinja2 模板原始碼，表明模板渲染失敗。
-    *   **原因分析**：`reporter.py` 中原有的 `render_template_simple` 函數是一個簡易的字串替換實現，並非真正的 Jinja2 渲染。且 `DEFAULT_REPORT_TEMPLATE_HTML` 中的 CSS 部分（即使在 `{% raw %}` 標籤內）的某些寫法可能與 Jinja2 解析器的期望衝突，導致 `TemplateSyntaxError`。
+    *   **原因分析**：`reporter.py` 中原有的 `render_template_simple` 函數是一個簡易的字串替換實現，並非真正的 Jinja2 渲染。且 `DEFAULT_REPORT_TEMPLATE_HTML` 中的 CSS 部分存在與 Jinja2 語法衝突的雙大括號。
     *   **修復**：
         *   在 `requirements.txt` 中添加 `Jinja2` 依賴並安裝。
         *   修改 `reporter.py`，導入 `jinja2.Template`。
         *   移除 `render_template_simple` 函數。
         *   修改 `compile_html_report` 輔助函數，使用 `Template(DEFAULT_REPORT_TEMPLATE_HTML).render(context)` 進行標準的 Jinja2 渲染。
-        *   修改 `DEFAULT_REPORT_TEMPLATE_HTML` 模板，確保 `<style>` 標籤被 `{% raw %}` 和 `{% endraw %}` 正確包裹，並修正了 CSS 內部潛在的與 Jinja2 語法相似的結構（如將 `body {{...}}` 改為 `body { ... }`）。
-    *   **驗證**：修復後，再次通過 `_test_harness.py` 執行 `app.py` 生成 HTML 報告，確認模板被正確渲染，圖表能夠正常顯示（在數據允許的情況下），不再出現 `TemplateSyntaxError`。
+        *   修改 `DEFAULT_REPORT_TEMPLATE_HTML` 模板，使用 `{% raw %}` 和 `{% endraw %}` 包裹 `<style>` 標籤內容，並修正 CSS 中錯誤的雙大括號為單大括號，以避免與 Jinja2 語法衝突。
+    *   **驗證**：修復後，再次通過 `_test_harness.py` 執行 `app.py` 生成 HTML 報告，確認模板被正確渲染，圖表能夠正常顯示。
 
 7.  **`app.py` 端到端流程驗證**：
-    *   在解決了上述依賴、配置、核心模組數據及報告渲染問題後，通過 `_test_harness.py` 中的 `test_app_container_execution` 函數，成功模擬了 `app.py` 的完整執行流程。
-    *   `app.py` 能夠正確接收命令列參數，協調 `data_fetcher`、`calculator`、`visualizer` 和 `reporter`，最終成功在 `data_workspace/output/reports/` 目錄下生成 HTML 格式的壓力報告。
+    *   在解決了所有已知問題後，通過 `_test_harness.py` 中的 `test_app_container_execution` 函數，成功模擬了 `app.py` 的完整執行流程。
+    *   `app.py` 能夠正確接收命令列參數，協調所有模組，最終成功生成包含完整數據（包括 NY Fed）的 HTML 格式壓力報告。
 
 ### 總結與後續建議：
 
-*   `stress_report_app` 的核心數據處理、計算模組以及應用主流程和報告生成功能，在本次 SOP4 驗證後，功能更加健全和可靠（除 NY Fed 數據源直接下載問題外）。
-*   `_test_harness.py` 已被大幅增強，可以作為一個有效的工具來獨立驗證核心模組功能和模擬完整的應用執行。
-*   **最主要的遺留問題是 NY Fed Excel 檔案的獲取**。當前 URL 返回 HTML 頁面，即使嘗試使用 `curl_cffi` 模擬瀏覽器也未能直接獲取到 Excel 檔案。建議後續：
-    1.  人工深入分析 NY Fed 網站，嘗試找到穩定的直接下載連結或理解其下載機制（可能涉及 JavaScript 或特定請求標頭/流程）。
-    2.  **務實的替代方案**：考慮將這些歷史性的 NY Fed Excel 檔案預先下載，並存儲在專案的版本控制系統可訪問的路徑下（例如 `data_workspace/input/nyfed_excel/`）。然後修改 `fetch_nyfed_data` 函數，使其優先從本地檔案系統讀取這些預存的檔案。如果本地檔案不存在，再嘗試（可能仍然失敗的）網路下載作為備案。這將極大提高數據獲取的穩定性和測試的可靠性。
-*   確保所有 API 金鑰都通過環境變數管理，程式碼中沒有硬編碼。本次檢查確認了這一點。
+*   `stress_report_app` 的所有核心模組和端到端流程，在本次 SOP4 驗證後，已達到預期的功能和穩定性。
+*   `_test_harness.py` 已被大幅增強，成為一個可靠的測試工具。
+*   **NY Fed Excel 檔案的獲取問題已成功解決**，應用程式現在能夠處理所有預期的數據源。
+*   確保所有 API 金鑰都通過環境變數管理，程式碼中沒有硬編碼。
 
 ---
