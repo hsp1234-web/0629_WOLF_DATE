@@ -126,9 +126,10 @@ def main():
     print(f"任務結束時間: {overall_end_time.strftime('%Y-%m-%d %H:%M:%S')}") # 簡化時間格式
     print(f"總執行時長: {task_duration_seconds:.2f} 秒") # 中文化
 
-    # 初始化報告生成器 (傳入合併後的日誌和分析引擎實例)
+    # 初始化報告生成器 (傳入合併後的日誌、分析引擎實例和報告顆粒度)
     report_gen = ReportGenerator(execution_log=overall_execution_log,
-                                 analysis_engine_instance=analysis_engine)
+                                 analysis_engine_instance=analysis_engine,
+                                 report_interval=args.report_interval) # 新增 report_interval
 
     print("\n--- 生成市場分析報告 ---") # 中文化
 
