@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-DuckDB 資料庫管理模組 for Daily Market Analyzer。
-負責處理所有與 DuckDB 的互動，例如建立資料表、寫入數據等。
+DuckDB 資料庫管理模組 for Daily Market Analyzer (v12.0)。
 """
 import duckdb
 import pandas as pd
@@ -9,32 +8,14 @@ import os
 from datetime import datetime, timedelta
 
 class DBManager:
-    """
-    DuckDB 資料庫管理器。
-
-    提供方法來建立資料庫連線、建立資料表以及高效地寫入 (UPSERT) DataFrame 數據。
-    此版本適用於 Daily Market Analyzer，處理包含 'interval' 欄位的數據，並提供查詢功能。
-    """
     def __init__(self, db_path: str):
-        """
-        初始化 DBManager。
-
-        Args:
-            db_path (str): DuckDB 資料庫檔案的路徑。
-        """
         self.db_path = db_path
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
-            print(f"INFO: 已建立資料庫目錄: {db_dir}")
-        print(f"INFO: DBManager (Daily Market Analyzer) 初始化完畢，資料庫路徑: {self.db_path}")
+        print(f"INFO: DBManager (Daily Market Analyzer v12.0) 初始化完畢，資料庫路徑: {self.db_path}")
 
     def create_ohlcv_table(self, table_name: str = "market_ohlcv_analyzer"):
-        """
-        建立市場 OHLCV（開高低收量）數據表，如果該表尚不存在。
-        包含 'interval' 和 'ticker' 欄位。
-        主鍵為 (ticker, datetime, interval) 以確保唯一性。
-        """
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             datetime TIMESTAMPTZ NOT NULL,
@@ -51,49 +32,39 @@ class DBManager:
         try:
             with duckdb.connect(self.db_path) as con:
                 con.execute(create_sql)
-            print(f"INFO: 資料表 '{table_name}' 已在資料庫 '{self.db_path}' 中準備就緒 (包含 interval 欄位)。")
+            print(f"INFO: 資料表 '{table_name}' 已在資料庫 '{self.db_path}' 中準備就緒.")
         except Exception as e:
             print(f"錯誤: 建立資料表 '{table_name}' 失敗: {e}")
             raise
 
     def upsert_data(self, df: pd.DataFrame, table_name: str):
-        """
-        使用 DuckDB 的 `INSERT OR REPLACE INTO` 功能高效地將 DataFrame 數據寫入指定資料表。
-        此版本預期 DataFrame 已包含 'ticker' 和 'interval' 欄位。
-        """
         if df.empty:
-            # 嘗試從 DataFrame 中獲取 ticker 和 interval 信息，如果失敗則使用預設值
+            # Extract ticker for logging if possible, even for an empty df
             current_ticker = "未知Ticker"
-            if 'ticker' in df.columns and not df.empty:
+            if 'ticker' in df.columns and not df.empty: # Should not happen if df.empty is true
                 current_ticker = df['ticker'].iloc[0]
-            elif hasattr(df, 'name') and df.name: # 向下相容舊的 df.name 方式
+            elif hasattr(df, 'name') and df.name:
                  current_ticker = df.name
-
-            print(f"INFO: 傳入的 DataFrame ({current_ticker}) 為空，無需寫入資料表 '{table_name}'。")
+            print(f"INFO:傳入的 DataFrame ({current_ticker}) 為空，無需寫入資料表 '{table_name}'。")
             return
 
         df_to_insert = df.copy()
-
         if isinstance(df_to_insert.index, pd.DatetimeIndex):
             df_to_insert = df_to_insert.reset_index()
 
         df_to_insert.columns = [col.lower() for col in df_to_insert.columns]
-
         if 'index' in df_to_insert.columns and 'datetime' not in df_to_insert.columns:
             df_to_insert.rename(columns={'index': 'datetime'}, inplace=True)
 
-        # 確保 ticker 和 interval 欄位存在 (可能來自 df.name 或已是欄位)
-        if 'ticker' not in df_to_insert.columns and hasattr(df, 'name') and df.name:
-             df_to_insert['ticker'] = df.name
-
-        # interval 必須是 df 的一個欄位，由 yfinance_client 添加
         required_cols = ['datetime', 'ticker', 'interval', 'open', 'high', 'low', 'close', 'volume']
-
         missing_cols = [col for col in required_cols if col not in df_to_insert.columns]
+
+        current_ticker_for_error = "未知Ticker"
+        if 'ticker' in df_to_insert.columns and not df_to_insert.empty :
+            current_ticker_for_error = df_to_insert['ticker'].iloc[0]
+
         if missing_cols:
-            current_ticker_for_error = df_to_insert['ticker'].iloc[0] if 'ticker' in df_to_insert.columns and not df_to_insert.empty else "未知 Ticker"
-            print(f"錯誤: DataFrame ({current_ticker_for_error}) 缺少必要欄位: {', '.join(missing_cols)}。無法寫入資料表 '{table_name}'。")
-            df_to_insert.info()
+            print(f"錯誤: DataFrame ({current_ticker_for_error}) 缺少必要欄位: {', '.join(missing_cols)}。無法寫入。")
             return
 
         df_to_insert = df_to_insert[required_cols]
@@ -112,9 +83,7 @@ class DBManager:
             df_to_insert['ticker'] = df_to_insert['ticker'].astype(str)
             df_to_insert['interval'] = df_to_insert['interval'].astype(str)
         except Exception as e:
-            current_ticker_for_error = df_to_insert['ticker'].iloc[0] if 'ticker' in df_to_insert.columns and not df_to_insert.empty else "未知 Ticker"
             print(f"錯誤: DataFrame ({current_ticker_for_error}) 數據類型轉換失敗: {e}")
-            df_to_insert.info()
             return
 
         try:
@@ -124,20 +93,11 @@ class DBManager:
                 upsert_sql = f"INSERT OR REPLACE INTO {table_name} ({columns_str}) SELECT {columns_str} FROM df_view_to_insert"
                 con.execute(upsert_sql)
                 con.unregister('df_view_to_insert')
-
-            current_ticker = df_to_insert['ticker'].iloc[0]
-            current_interval = df_to_insert['interval'].iloc[0]
-            print(f"INFO: 成功將 {len(df_to_insert)} 筆來自 '{current_ticker}' (顆粒度: {current_interval}) 的數據寫入/更新至資料表 '{table_name}'。")
+            print(f"INFO: 成功將 {len(df_to_insert)} 筆來自 '{current_ticker_for_error}' 的數據寫入/更新至 '{table_name}'。")
         except Exception as e:
-            current_ticker_for_error = df_to_insert['ticker'].iloc[0] if 'ticker' in df_to_insert.columns and not df_to_insert.empty else "未知 Ticker"
-            print(f"錯誤: 寫入數據到資料表 '{table_name}' 失敗 (Ticker: {current_ticker_for_error}): {e}")
-            print(f"DEBUG: 嘗試寫入的 DataFrame ({current_ticker_for_error}) info:")
-            df_to_insert.info()
+            print(f"錯誤: 寫入數據到 '{table_name}' 失敗 (Ticker: {current_ticker_for_error}): {e}")
 
     def query_data_for_day(self, ticker: str, date_str: str, table_name: str = "market_ohlcv_analyzer") -> pd.DataFrame:
-        """
-        查詢指定 ticker 在特定日期的所有 OHLCV 數據。
-        """
         try:
             target_date = datetime.strptime(date_str, "%Y-%m-%d")
             start_of_day = f"{date_str} 00:00:00"
@@ -152,8 +112,8 @@ class DBManager:
                 result_df = con.execute(query, [ticker, start_of_day, start_of_next_day]).fetchdf()
 
             if not result_df.empty and 'datetime' in result_df.columns:
-                result_df['datetime'] = pd.to_datetime(result_df['datetime']) # 確保是 datetime 物件
-                if result_df['datetime'].dt.tz is None: # fetchdf 可能返回 naive datetime
+                result_df['datetime'] = pd.to_datetime(result_df['datetime'])
+                if result_df['datetime'].dt.tz is None:
                     result_df['datetime'] = result_df['datetime'].dt.tz_localize('UTC')
                 else:
                     result_df['datetime'] = result_df['datetime'].dt.tz_convert('UTC')
@@ -164,128 +124,107 @@ class DBManager:
             return pd.DataFrame()
 
     def query_previous_day_close(self, ticker: str, current_date_str: str, table_name: str = "market_ohlcv_analyzer", max_lookback_days: int = 30) -> float | None:
-        """
-        查詢指定 ticker 在 current_date_str 前一個「有數據的」交易日的最後一筆收盤價。
-        """
         try:
             current_date_obj = datetime.strptime(current_date_str, "%Y-%m-%d").date()
-
             for i in range(1, max_lookback_days + 1):
                 prev_date_to_check = current_date_obj - timedelta(days=i)
                 prev_date_to_check_str = prev_date_to_check.strftime("%Y-%m-%d")
-
-                # print(f"DEBUG: query_previous_day_close: Checking {prev_date_to_check_str} for {ticker}")
                 daily_data_df = self.query_data_for_day(ticker, prev_date_to_check_str, table_name)
 
                 if not daily_data_df.empty:
-                    # 假設我們想要的是日線 (1d) 的收盤價作為前一天的收盤價
-                    # 如果有多種 interval，優先選擇 '1d'
+                    # Prefer '1d' interval if available for previous day's close
                     daily_1d_data = daily_data_df[daily_data_df['interval'] == '1d']
                     if not daily_1d_data.empty:
                         return daily_1d_data['close'].iloc[-1]
-                    else: # 如果沒有 '1d'數據，則取當天所有數據的最後一筆（可能是更高頻的數據）
-                        return daily_data_df['close'].iloc[-1]
-
-            # print(f"INFO: 在過去 {max_lookback_days} 天內未找到 {ticker} 在 {current_date_str} 之前的收盤數據。")
+                    return daily_data_df['close'].iloc[-1] # Fallback to last record of any interval
             return None
         except Exception as e:
             print(f"錯誤: 查詢 {ticker} 在 {current_date_str} 之前的收盤價失敗: {e}")
             return None
 
 if __name__ == '__main__':
-    print("--- DBManager (Daily Market Analyzer) 測試 ---")
-    test_db_path = "data_workspace/temp/test_analyzer_market_data.duckdb"
+    print("--- DBManager (Daily Market Analyzer v12.0) 測試 ---")
+    test_db_path = "data_workspace/temp/test_analyzer_v12_market_data.duckdb"
     if os.path.exists(test_db_path):
         os.remove(test_db_path)
 
     db_manager = DBManager(test_db_path)
-    table_name = "market_ohlcv_analyzer_test"
+    table_name = "market_ohlcv_analyzer_test_v12"
 
     print(f"\n--- 測試 1: 建立 {table_name} 資料表 ---")
     db_manager.create_ohlcv_table(table_name=table_name)
 
-    # 測試 upsert_data (與之前類似，確保能正常運作)
-    data1 = {
-        'datetime': pd.to_datetime(['2023-01-01 10:00:00', '2023-01-01 10:05:00']).tz_localize('UTC'),
-        'ticker': ['TEST_MAIN', 'TEST_MAIN'], 'interval': ['1m', '1m'],
-        'open': [100, 101], 'high': [102, 101.5], 'low': [99, 100.5], 'close': [101, 101.2], 'volume': [1000, 1200]
-    }
-    df_test_main = pd.DataFrame(data1).set_index('datetime')
-    db_manager.upsert_data(df_test_main, table_name)
+    # 準備測試數據
+    data_for_db = []
+    # Day 1: AAPL (1d and 5m), MSFT (1d)
+    day1_dt = datetime.strptime("2024-07-01", "%Y-%m-%d")
+    data_for_db.append({'datetime': day1_dt.replace(hour=16, minute=0, tzinfo=timedelta(0)), 'ticker': 'AAPL', 'interval': '1d', 'open': 150, 'high': 152, 'low': 149, 'close': 151, 'volume': 1000})
+    data_for_db.append({'datetime': day1_dt.replace(hour=15, minute=55, tzinfo=timedelta(0)), 'ticker': 'AAPL', 'interval': '5m', 'open': 150.8, 'high': 151, 'low': 150.7, 'close': 150.9, 'volume': 100}) # Earlier than 1d record
+    data_for_db.append({'datetime': day1_dt.replace(hour=16, minute=5, tzinfo=timedelta(0)), 'ticker': 'AAPL', 'interval': '5m', 'open': 150.9, 'high': 151.1, 'low': 150.8, 'close': 151.0, 'volume': 120}) # Later than 1d record (for testing iloc[-1])
+    data_for_db.append({'datetime': day1_dt.replace(hour=16, minute=0, tzinfo=timedelta(0)), 'ticker': 'MSFT', 'interval': '1d', 'open': 200, 'high': 202, 'low': 199, 'close': 201, 'volume': 2000})
+
+    # Day 2: AAPL (only 5m), MSFT (1d and 5m)
+    day2_dt = datetime.strptime("2024-07-02", "%Y-%m-%d")
+    data_for_db.append({'datetime': day2_dt.replace(hour=15, minute=55, tzinfo=timedelta(0)), 'ticker': 'AAPL', 'interval': '5m', 'open': 151.8, 'high': 152, 'low': 151.7, 'close': 151.9, 'volume': 150})
+    data_for_db.append({'datetime': day2_dt.replace(hour=16, minute=0, tzinfo=timedelta(0)), 'ticker': 'MSFT', 'interval': '1d', 'open': 201, 'high': 203, 'low': 200, 'close': 202, 'volume': 2200})
+    data_for_db.append({'datetime': day2_dt.replace(hour=16, minute=5, tzinfo=timedelta(0)), 'ticker': 'MSFT', 'interval': '5m', 'open': 202.1, 'high': 202.5, 'low': 202.0, 'close': 202.3, 'volume': 220})
+
+    # Day 3: AAPL (1d only)
+    day3_dt = datetime.strptime("2024-07-03", "%Y-%m-%d")
+    data_for_db.append({'datetime': day3_dt.replace(hour=16, minute=0, tzinfo=timedelta(0)), 'ticker': 'AAPL', 'interval': '1d', 'open': 152, 'high': 153, 'low': 151.5, 'close': 152.5, 'volume': 1100})
+
+
+    df_to_load = pd.DataFrame(data_for_db)
+    df_to_load['datetime'] = pd.to_datetime(df_to_load['datetime'])
+    df_to_load = df_to_load.set_index('datetime')
+
+    print(f"\n--- 測試 upsert_data with mixed intervals ---")
+    db_manager.upsert_data(df_to_load, table_name)
+
     with duckdb.connect(test_db_path) as con:
-        assert con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] == 2
-
-    print("\n--- 測試輔助查詢方法 ---")
-    multi_day_data = []
-    base_date_dt = datetime.strptime("2024-07-20", "%Y-%m-%d")
-
-    for i in range(5): # 5 天的數據
-        day_dt = base_date_dt + timedelta(days=i)
-        # 日線數據 (每天一筆)
-        multi_day_data.append({
-            'datetime': day_dt.replace(hour=16, minute=0, second=0, microsecond=0).astimezone(timedelta(hours=0)), # 標準化到 UTC 16:00
-            'ticker': 'AAPL', 'interval': '1d',
-            'open': 150.0+i, 'high': 152.5+i, 'low': 149.5+i, 'close': 151.0+i, 'volume': 1000000+i*1000
-        })
-        multi_day_data.append({
-            'datetime': day_dt.replace(hour=16, minute=0, second=0, microsecond=0).astimezone(timedelta(hours=0)),
-            'ticker': 'MSFT', 'interval': '1d',
-            'open': 200.0+i, 'high': 202.5+i, 'low': 199.5+i, 'close': 201.0+i, 'volume': 800000+i*1000
-        })
-
-    # 特定一天的分鐘線數據 (AAPL, 2024-07-22)
-    day_for_minute_data_dt = base_date_dt + timedelta(days=2) # This is 2024-07-22
-    for min_offset in range(0, 60, 15): # 09:00, 09:15, 09:30, 09:45 (假設市場開盤時間)
-        ts = day_for_minute_data_dt.replace(hour=9, minute=min_offset, second=0, microsecond=0).astimezone(timedelta(hours=0))
-        multi_day_data.append({
-            'datetime': ts, 'ticker': 'AAPL', 'interval': '15m',
-            'open': 152.0 + min_offset*0.01, 'high': 152.5 + min_offset*0.01,
-            'low': 151.5 + min_offset*0.01, 'close': 152.2 + min_offset*0.01, 'volume': 5000+min_offset*10
-        })
-
-    df_multi_day_all = pd.DataFrame(multi_day_data)
-    df_multi_day_all['datetime'] = pd.to_datetime(df_multi_day_all['datetime'])
-    # 確保所有 datetime 都是 UTC aware before set_index
-    if df_multi_day_all['datetime'].dt.tz is None:
-        df_multi_day_all['datetime'] = df_multi_day_all['datetime'].dt.tz_localize('UTC')
-    else:
-        df_multi_day_all['datetime'] = df_multi_day_all['datetime'].dt.tz_convert('UTC')
-    df_multi_day_all = df_multi_day_all.set_index('datetime')
-
-    db_manager.upsert_data(df_multi_day_all, table_name)
+        count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        print(f"Total rows in {table_name}: {count}")
+        assert count == len(data_for_db)
 
     print("\n--- 測試 query_data_for_day ---")
-    aapl_2024_07_22_data = db_manager.query_data_for_day(ticker="AAPL", date_str="2024-07-22", table_name=table_name)
-    print(f"AAPL 2024-07-22 data (預期 1筆 '1d' + 4筆 '15m'):\n{aapl_2024_07_22_data}")
-    assert len(aapl_2024_07_22_data) == 5
-    assert '1d' in aapl_2024_07_22_data['interval'].unique()
-    assert '15m' in aapl_2024_07_22_data['interval'].unique()
+    aapl_day1_data = db_manager.query_data_for_day('AAPL', '2024-07-01', table_name)
+    print(f"AAPL 2024-07-01 data (expected 3 rows, 1d and 5m):\n{aapl_day1_data}")
+    assert len(aapl_day1_data) == 3
+    assert '1d' in aapl_day1_data['interval'].values
+    assert '5m' in aapl_day1_data['interval'].values
 
-    msft_2024_07_22_data = db_manager.query_data_for_day(ticker="MSFT", date_str="2024-07-22", table_name=table_name)
-    print(f"\nMSFT 2024-07-22 data (預期 1筆 '1d'):\n{msft_2024_07_22_data}")
-    assert len(msft_2024_07_22_data) == 1
-    assert msft_2024_07_22_data['interval'].iloc[0] == '1d'
+    msft_day2_data = db_manager.query_data_for_day('MSFT', '2024-07-02', table_name)
+    print(f"MSFT 2024-07-02 data (expected 2 rows, 1d and 5m):\n{msft_day2_data}")
+    assert len(msft_day2_data) == 2
 
     print("\n--- 測試 query_previous_day_close ---")
-    # AAPL: 2024-07-22 (i=2) close = 151.0+2 = 153.0
-    # MSFT: 2024-07-22 (i=2) close = 201.0+2 = 203.0
+    # Test 1: Prev day has '1d' data for AAPL (close should be 151.0 from 2024-07-01 1d)
+    prev_close1 = db_manager.query_previous_day_close('AAPL', '2024-07-02', table_name)
+    print(f"AAPL prev close for 2024-07-02: {prev_close1} (expected 151.0)")
+    assert prev_close1 == 151.0
 
-    # 查詢 AAPL 2024-07-23 的前一日收盤價 (應為 2024-07-22 的日線收盤價)
-    prev_close_aapl = db_manager.query_previous_day_close(ticker="AAPL", current_date_str="2024-07-23", table_name=table_name)
-    print(f"AAPL 前一日 (相對於 2024-07-23) 收盤價: {prev_close_aapl}")
-    assert prev_close_aapl == 151.0 + 2 # 153.0 (AAPL '1d' close on 2024-07-22)
+    # Test 2: Prev day for AAPL (2024-07-02) only has '5m' data, close should be 151.9
+    prev_close2 = db_manager.query_previous_day_close('AAPL', '2024-07-03', table_name)
+    print(f"AAPL prev close for 2024-07-03: {prev_close2} (expected 151.9)")
+    assert prev_close2 == 151.9
 
-    # 查詢 MSFT 2024-07-21 (週日) 的前一日收盤價 (應為 2024-07-20 的日線收盤價)
-    # 2024-07-20 (i=0) MSFT '1d' close = 201.0
-    prev_close_msft_weekend = db_manager.query_previous_day_close(ticker="MSFT", current_date_str="2024-07-21", table_name=table_name)
-    print(f"MSFT 前一日 (相對於 2024-07-21) 收盤價: {prev_close_msft_weekend}")
-    assert prev_close_msft_weekend == 201.0
+    # Test 3: Prev day for MSFT (2024-07-01) has '1d' (close 201.0) and a later '5m' (close 202.3, but 1d is preferred)
+    # query_previous_day_close should prefer '1d' if available.
+    # MSFT on 2024-07-02, prev day is 2024-07-01. On 2024-07-01, MSFT has 1d data with close 201.
+    prev_close3 = db_manager.query_previous_day_close('MSFT', '2024-07-02', table_name)
+    print(f"MSFT prev close for 2024-07-02: {prev_close3} (expected 201.0 from 1d)")
+    assert prev_close3 == 201.0
 
-    # 查詢一個日期，其前幾天都沒有數據
-    prev_close_way_back = db_manager.query_previous_day_close(ticker="AAPL", current_date_str="2024-07-19", table_name=table_name) # 數據從 07-20 開始
-    print(f"AAPL 前一日 (相對於 2024-07-19，預期為 None): {prev_close_way_back}")
-    assert prev_close_way_back is None
+    # Test 4: current_date_str is the first day of data, so no previous day.
+    prev_close4 = db_manager.query_previous_day_close('AAPL', '2024-07-01', table_name)
+    print(f"AAPL prev close for 2024-07-01: {prev_close4} (expected None)")
+    assert prev_close4 is None
 
-    print("\n--- DBManager 輔助查詢測試完畢 ---")
-    # os.remove(test_db_path)
+    # Test 5: Ticker with no data at all
+    prev_close5 = db_manager.query_previous_day_close('GOOG', '2024-07-02', table_name)
+    print(f"GOOG prev close for 2024-07-02: {prev_close5} (expected None)")
+    assert prev_close5 is None
+
+    print("\n--- DBManager (Daily Market Analyzer v12.0) 測試完畢 ---")
+    # os.remove(test_db_path) # Optional: clean up test db
     # print(f"INFO: 已刪除測試資料庫 {test_db_path}")

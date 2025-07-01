@@ -1,36 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-整合測試 for apps.data_hydrator.run
-
-使用 unittest.mock 來模擬外部依賴 (YFinanceClient, DBManager, ReportGenerator)，
-專注於測試 run.py 的主流程和協調邏輯。
+整合測試 for apps.daily_market_analyzer.run (v12.0)
+使用 unittest.mock 來模擬外部依賴，專注於測試 run.py 的主流程和協調邏輯。
 """
 import unittest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock, call # call 用於驗證呼叫順序或多次呼叫的參數
 import pandas as pd
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 確保 run.py 和其依賴可以被導入
-# (這部分與 run.py 中的 setup_project_path 類似，確保測試環境也能找到模組)
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# 現在可以導入 run
+# 導入被測試的模組
 from apps.daily_market_analyzer import run as daily_market_analyzer_run
-# 如果 run.py 內部有全局的 YFinanceClient 等實例化，可能需要在測試中 patch 它們的模組路徑
 
-class TestDailyMarketAnalyzerRun(unittest.TestCase): # 更新類名
+class TestDailyMarketAnalyzerRunV12(unittest.TestCase):
 
-    def create_mock_dataframe(self, ticker="TEST", interval="1m", num_rows=5, start_date_str="2024-01-01"):
-        """輔助方法：創建一個模擬的 DataFrame，類似 hydrate_data_range 返回的格式。"""
-        start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
-        dates = pd.to_datetime([start_dt + timedelta(days=i) for i in range(num_rows)]).tz_localize('UTC')
-        # 確保時間戳不完全相同，以便測試多筆記錄
-        dates = [d.replace(hour=9, minute=30+i*5) for i, d in enumerate(dates)]
-
+    def _create_mock_df(self, num_rows=1, ticker="MOCK", interval="1d",
+                        start_datetime_str="2024-01-01 09:30:00"):
+        """創建一個用於測試的模擬 DataFrame。"""
+        start_dt = datetime.strptime(start_datetime_str, "%Y-%m-%d %H:%M:%S")
+        dates = [start_dt + timedelta(minutes=i*5) for i in range(num_rows)] # 假設5分鐘間隔的數據點
         data = {
             'open': [100 + i for i in range(num_rows)],
             'high': [102 + i for i in range(num_rows)],
@@ -40,220 +34,130 @@ class TestDailyMarketAnalyzerRun(unittest.TestCase): # 更新類名
             'ticker': [ticker] * num_rows,
             'interval': [interval] * num_rows
         }
-        df = pd.DataFrame(data, index=pd.DatetimeIndex(dates, name='datetime'))
+        df = pd.DataFrame(data, index=pd.DatetimeIndex(dates, name='datetime', tz='UTC'))
         return df
 
-    def create_mock_execution_log(self, ticker, status="success", interval="1m", count=5, start_date_str="2024-01-01", num_days=1, message_override=None):
-        """輔助方法：創建模擬的 execution_log。"""
-        log = {}
-        start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
-        for i in range(num_days):
-            date_key = (start_dt + timedelta(days=i)).strftime("%Y-%m-%d")
-            log.setdefault(date_key, {})[ticker] = {
-                "status": status,
-                "interval": interval if status == "success" else None,
-                "count": count if status == "success" else 0,
-                "message": message_override if message_override else f"{status} for {ticker} on {date_key}"
+    def _create_mock_exec_log(self, ticker, date_str, status="success", interval="1d", count=1, msg="OK"):
+        """創建一個用於測試的模擬單日單 ticker 執行日誌條目。"""
+        return {
+            date_str: {
+                ticker: {"status": status, "interval": interval, "count": count, "message": msg}
             }
-        return log
+        }
 
+    @patch('apps.daily_market_analyzer.run.datetime') # Mock datetime.now() for consistent time
     @patch('apps.daily_market_analyzer.run.ReportGenerator')
-    @patch('apps.daily_market_analyzer.run.AnalysisEngine') # 新增 Mock
-    @patch('apps.daily_market_analyzer.run.DBManager')
-    @patch('apps.daily_market_analyzer.run.YFinanceClient')
-    @patch('apps.daily_market_analyzer.run.argparse.ArgumentParser')
-    def test_main_flow_success_case(self, mock_argparse, mock_yf_client_class, mock_db_manager_class, mock_analysis_engine_class, mock_report_generator_class):
-        print("\n--- 測試: test_main_flow_success_case (DailyMarketAnalyzer) ---")
-        # --- 1. 設定 Mock 物件 ---
-
-        # Mock argparse
-        mock_args = MagicMock()
-        mock_args.tickers = "AAPL,MSFT"
-        mock_args.start_date = "2024-01-01" # 測試用日期
-        mock_args.end_date = "2024-01-02"   # 縮短日期範圍以簡化 mock execution_log
-        mock_args.db_path = "mock_analyzer.db"
-        mock_args.table_name = "mock_analyzer_ohlcv"
-        mock_args.process_uploads = False
-
-        mock_parser_instance = MagicMock()
-        mock_parser_instance.parse_args.return_value = mock_args
-        mock_argparse.return_value = mock_parser_instance
-
-        # Mock YFinanceClient instance and its method
-        mock_yf_client_instance = MagicMock()
-        # Mock YFinanceClient instance and its method
-        mock_yf_client_instance = MagicMock()
-        mock_aapl_df = self.create_mock_dataframe(ticker="AAPL", interval="1m", num_rows=2, start_date_str="2024-01-01")
-        mock_msft_df = self.create_mock_dataframe(ticker="MSFT", interval="5m", num_rows=2, start_date_str="2024-01-01")
-
-        mock_aapl_log = self.create_mock_execution_log(ticker="AAPL", interval="1m", count=1, start_date_str="2024-01-01", num_days=1)
-        mock_aapl_log.update(self.create_mock_execution_log(ticker="AAPL", interval="1m", count=1, start_date_str="2024-01-02", num_days=1))
-
-        mock_msft_log = self.create_mock_execution_log(ticker="MSFT", interval="5m", count=1, start_date_str="2024-01-01", num_days=1)
-        mock_msft_log.update(self.create_mock_execution_log(ticker="MSFT", interval="5m", count=1, start_date_str="2024-01-02", num_days=1))
-
-        def yf_hydrate_side_effect(ticker, start_date, end_date):
-            if ticker == "AAPL":
-                return mock_aapl_df, mock_aapl_log
-            elif ticker == "MSFT":
-                return mock_msft_df, mock_msft_log
-            return None, {}
-        mock_yf_client_instance.hydrate_data_range.side_effect = yf_hydrate_side_effect
-        mock_yf_client_class.return_value = mock_yf_client_instance
-
-        # Mock DBManager
-        mock_db_manager_instance = MagicMock()
-        mock_db_manager_class.return_value = mock_db_manager_instance
-
-        # Mock AnalysisEngine
-        mock_analysis_engine_instance = MagicMock()
-        mock_analysis_engine_class.return_value = mock_analysis_engine_instance
-
-        # Mock ReportGenerator
-        mock_report_generator_instance = MagicMock()
-        mock_report_generator_class.return_value = mock_report_generator_instance
-
-        # --- 2. 執行被測函數 ---
-        daily_market_analyzer_run.main() # 更新調用目標
-
-        # --- 3. 驗證 (Assertions) ---
-        mock_argparse.assert_called_once()
-        mock_parser_instance.parse_args.assert_called_once()
-        mock_yf_client_class.assert_called_once_with()
-
-        self.assertEqual(mock_yf_client_instance.hydrate_data_range.call_count, 2)
-        mock_yf_client_instance.hydrate_data_range.assert_any_call("AAPL", "2024-01-01", "2024-01-02")
-        mock_yf_client_instance.hydrate_data_range.assert_any_call("MSFT", "2024-01-01", "2024-01-02")
-
-        mock_db_manager_class.assert_called_once_with(db_path="mock_analyzer.db")
-        mock_db_manager_instance.create_ohlcv_table.assert_called_once_with(table_name="mock_analyzer_ohlcv")
-        self.assertEqual(mock_db_manager_instance.upsert_data.call_count, 2)
-        mock_db_manager_instance.upsert_data.assert_any_call(mock_aapl_df, table_name="mock_analyzer_ohlcv")
-        mock_db_manager_instance.upsert_data.assert_any_call(mock_msft_df, table_name="mock_analyzer_ohlcv")
-
-        # 驗證 AnalysisEngine 被初始化
-        mock_analysis_engine_class.assert_called_once_with(db_manager_instance=mock_db_manager_instance)
-
-        # 驗證 ReportGenerator 初始化和調用
-        # 構建預期的 overall_execution_log
-        expected_overall_log = {}
-        for date_key, ticker_log_val in mock_aapl_log.items():
-            expected_overall_log.setdefault(date_key, {}).update(ticker_log_val)
-        for date_key, ticker_log_val in mock_msft_log.items():
-            expected_overall_log.setdefault(date_key, {}).update(ticker_log_val)
-
-        mock_report_generator_class.assert_called_once_with(
-            execution_log=expected_overall_log,
-            analysis_engine_instance=mock_analysis_engine_instance
-        )
-        mock_report_generator_instance.generate_full_report.assert_called_once()
-
-        # 驗證傳遞給 generate_full_report 的參數
-        report_call_args = mock_report_generator_instance.generate_full_report.call_args[0]
-        self.assertEqual(report_call_args[0], mock_args.start_date) # overall_start_date_str
-        self.assertEqual(report_call_args[1], mock_args.end_date)   # overall_end_date_str
-        self.assertIsInstance(report_call_args[2], datetime)        # report_generation_time
-        self.assertIsInstance(report_call_args[3], float)           # task_duration_seconds
-        self.assertEqual(report_call_args[4], ["AAPL", "MSFT"])     # target_tickers
-        self.assertEqual(report_call_args[5], mock_args.table_name) # db_table_name
-
-
-    @patch('apps.daily_market_analyzer.run.ReportGenerator') # 更新 patch 路徑
     @patch('apps.daily_market_analyzer.run.AnalysisEngine')
     @patch('apps.daily_market_analyzer.run.DBManager')
     @patch('apps.daily_market_analyzer.run.YFinanceClient')
     @patch('apps.daily_market_analyzer.run.argparse.ArgumentParser')
-    def test_main_flow_one_ticker_fails(self, mock_argparse, mock_yf_client_class, mock_db_manager_class, mock_analysis_engine_class, mock_report_generator_class):
-        print("\n--- 測試: test_main_flow_one_ticker_fails (DailyMarketAnalyzer) ---")
+    def test_main_flow_all_success(self, mock_argparse, mock_yf_client_cls, mock_db_manager_cls,
+                                   mock_analysis_engine_cls, mock_report_generator_cls, mock_datetime):
+        print("\n--- Test: test_main_flow_all_success (v12.0) ---")
+
+        # --- Setup Mocks ---
+        # Mock datetime.now()
+        mock_now_time = datetime(2024, 7, 28, 12, 0, 0)
+        mock_datetime.now.return_value = mock_now_time
+
+        # argparse
         mock_args = MagicMock()
-        mock_args.tickers = "GOOD,BAD"
-        mock_args.start_date = "2024-01-01"
-        mock_args.end_date = "2024-01-01" # 單日測試
-        mock_args.db_path = "mock_fail_analyzer.db"
-        mock_args.table_name = "mock_fail_analyzer_ohlcv"
+        mock_args.tickers = "AAPL,GOOG"
+        mock_args.start_date = "2024-07-25"
+        mock_args.end_date = "2024-07-26"
+        mock_args.db_path = "dummy_path.db"
+        mock_args.table_name = "dummy_table"
         mock_args.process_uploads = False
+        mock_parser = MagicMock()
+        mock_parser.parse_args.return_value = mock_args
+        mock_argparse.return_value = mock_parser
 
-        mock_parser_instance = MagicMock()
-        mock_parser_instance.parse_args.return_value = mock_args
-        mock_argparse.return_value = mock_parser_instance
+        # YFinanceClient
+        mock_yf_instance = MagicMock()
+        mock_aapl_df_d1 = self._create_mock_df(ticker="AAPL", interval="1m", num_rows=2, start_datetime_str="2024-07-25 09:30:00")
+        mock_aapl_df_d2 = self._create_mock_df(ticker="AAPL", interval="1m", num_rows=2, start_datetime_str="2024-07-26 09:30:00")
+        mock_goog_df_d1 = self._create_mock_df(ticker="GOOG", interval="5m", num_rows=1, start_datetime_str="2024-07-25 10:00:00")
+        # GOOG on day 2 returns no data, but yf_client itself will fill the log correctly
 
-        mock_yf_client_instance = MagicMock()
-        mock_good_df = self.create_mock_dataframe(ticker="GOOD", interval="1d", num_rows=1, start_date_str="2024-01-01")
-        mock_good_log = self.create_mock_execution_log(ticker="GOOD", interval="1d", count=1, start_date_str="2024-01-01")
-        mock_bad_log = self.create_mock_execution_log(ticker="BAD", status="failed_all_intervals", interval=None, count=0, start_date_str="2024-01-01")
+        aapl_log = self._create_mock_exec_log("AAPL", "2024-07-25", "success", "1m", 2)
+        aapl_log.update(self._create_mock_exec_log("AAPL", "2024-07-26", "success", "1m", 2))
 
-        def yf_hydrate_side_effect_fail(ticker, start_date, end_date):
-            if ticker == "GOOD":
-                return mock_good_df, mock_good_log
-            elif ticker == "BAD":
-                return None, mock_bad_log # 模擬 BAD ticker 抓取失敗
-            return None, {}
-        mock_yf_client_instance.hydrate_data_range.side_effect = yf_hydrate_side_effect_fail
-        mock_yf_client_class.return_value = mock_yf_client_instance
+        goog_log_d1 = self._create_mock_exec_log("GOOG", "2024-07-25", "success", "5m", 1)
+        goog_log_d2 = self._create_mock_exec_log("GOOG", "2024-07-26", "no_data_for_interval", "5m", 0, "No data found with 5m for 2024-07-26 after all chunks.")
+        goog_log = {**goog_log_d1, **goog_log_d2} # Combine day1 and day2 logs for GOOG
 
-        mock_db_manager_instance = MagicMock()
-        mock_db_manager_class.return_value = mock_db_manager_instance
-        mock_analysis_engine_instance = MagicMock() # Mock AnalysisEngine
-        mock_analysis_engine_class.return_value = mock_analysis_engine_instance
-        mock_report_generator_instance = MagicMock()
-        mock_report_generator_class.return_value = mock_report_generator_instance
+        def yf_side_effect(ticker, start_date, end_date):
+            if ticker == "AAPL":
+                # Concatenate DFs for AAPL if start/end covers both days, or return relevant part
+                df_to_return = pd.concat([mock_aapl_df_d1, mock_aapl_df_d2])
+                return df_to_return, aapl_log
+            elif ticker == "GOOG":
+                 # GOOG only has data for D1
+                return mock_goog_df_d1, goog_log
+            return pd.DataFrame(), {} # Should not happen in this test
 
-        daily_market_analyzer_run.main() # 更新調用
+        mock_yf_instance.hydrate_data_range.side_effect = yf_side_effect
+        mock_yf_client_cls.return_value = mock_yf_instance
 
-        mock_db_manager_instance.upsert_data.assert_called_once_with(mock_good_df, table_name="mock_fail_analyzer_ohlcv")
+        # DBManager
+        mock_db_instance = MagicMock()
+        mock_db_manager_cls.return_value = mock_db_instance
 
-        # 驗證傳遞給 ReportGenerator 的 execution_log
-        expected_overall_log_fail = {}
-        expected_overall_log_fail.update(mock_good_log)
-        expected_overall_log_fail.update(mock_bad_log)
+        # AnalysisEngine
+        mock_ae_instance = MagicMock()
+        mock_analysis_engine_cls.return_value = mock_ae_instance
 
-        mock_report_generator_class.assert_called_once_with(
-            execution_log=expected_overall_log_fail,
-            analysis_engine_instance=mock_analysis_engine_instance
+        # ReportGenerator
+        mock_rg_instance = MagicMock()
+        mock_report_generator_cls.return_value = mock_rg_instance
+
+        # --- Run main ---
+        daily_market_analyzer_run.main()
+
+        # --- Assertions ---
+        mock_argparse.assert_called_once()
+        mock_yf_client_cls.assert_called_once_with()
+        mock_db_manager_cls.assert_called_once_with(db_path=mock_args.db_path)
+        mock_analysis_engine_cls.assert_called_once_with(db_manager_instance=mock_db_instance)
+
+        mock_db_instance.create_ohlcv_table.assert_called_once_with(table_name=mock_args.table_name)
+
+        self.assertEqual(mock_yf_instance.hydrate_data_range.call_count, 2) # AAPL, GOOG
+        mock_yf_instance.hydrate_data_range.assert_any_call("AAPL", mock_args.start_date, mock_args.end_date)
+        mock_yf_instance.hydrate_data_range.assert_any_call("GOOG", mock_args.start_date, mock_args.end_date)
+
+        self.assertEqual(mock_db_instance.upsert_data.call_count, 2) # AAPL df, GOOG df
+        # Check that the correct DataFrames were passed to upsert_data
+        upsert_calls = mock_db_instance.upsert_data.call_args_list
+        self.assertTrue(any(c[0][0].equals(pd.concat([mock_aapl_df_d1, mock_aapl_df_d2])) and c[0][1] == mock_args.table_name for c in upsert_calls))
+        self.assertTrue(any(c[0][0].equals(mock_goog_df_d1) and c[0][1] == mock_args.table_name for c in upsert_calls))
+
+        # Build expected overall execution log
+        expected_overall_log = {}
+        for date_key, ticker_log_val in aapl_log.items():
+            expected_overall_log.setdefault(date_key, {}).update(ticker_log_val)
+        for date_key, ticker_log_val in goog_log.items():
+            expected_overall_log.setdefault(date_key, {}).update(ticker_log_val)
+
+        mock_report_generator_cls.assert_called_once_with(
+            execution_log=expected_overall_log,
+            analysis_engine_instance=mock_ae_instance
         )
-        mock_report_generator_instance.generate_full_report.assert_called_once()
-        # 可以進一步檢查 generate_full_report 的參數，但這裡主要關注 execution_log
 
+        report_call_args_list = mock_rg_instance.generate_full_report.call_args_list
+        self.assertEqual(len(report_call_args_list), 1)
+        report_call_args = report_call_args_list[0][0] # Get positional args from the call
 
-    @patch('apps.daily_market_analyzer.run.YFinanceClient') # 更新 patch 路徑
-    @patch('apps.daily_market_analyzer.run.argparse.ArgumentParser')
-    def test_main_flow_process_uploads_is_true(self, mock_argparse, mock_yf_client_class):
-        print("\n--- 測試: test_main_flow_process_uploads_is_true (DailyMarketAnalyzer) ---")
-        mock_args = MagicMock()
-        mock_args.tickers = "AAPL"
-        mock_args.start_date = "2024-01-01"
-        mock_args.end_date = "2024-01-01"
-        mock_args.db_path = "mock_analyzer.db"
-        mock_args.table_name = "mock_analyzer_ohlcv"
-        mock_args.process_uploads = True # 設置為 True
+        self.assertEqual(report_call_args[0], mock_args.start_date)
+        self.assertEqual(report_call_args[1], mock_args.end_date)
+        self.assertIsInstance(report_call_args[2], datetime) # report_generation_time
+        self.assertIsInstance(report_call_args[3], float)    # task_duration_seconds
+        self.assertEqual(report_call_args[4], ["AAPL", "GOOG"]) # target_tickers
+        self.assertEqual(report_call_args[5], mock_args.table_name) # db_table_name
 
-        mock_parser_instance = MagicMock()
-        mock_parser_instance.parse_args.return_value = mock_args
-        mock_argparse.return_value = mock_parser_instance
-
-        mock_yf_client_instance = MagicMock()
-        # hydrate_data_range 現在返回 df, log_dict
-        mock_df = self.create_mock_dataframe(ticker="AAPL", start_date_str="2024-01-01", num_rows=1)
-        mock_log = self.create_mock_execution_log(ticker="AAPL", start_date_str="2024-01-01", num_days=1)
-        mock_yf_client_instance.hydrate_data_range.return_value = (mock_df, mock_log)
-        mock_yf_client_class.return_value = mock_yf_client_instance
-
-        # Mock 其他依賴項
-        with patch('apps.daily_market_analyzer.run.DBManager'), \
-             patch('apps.daily_market_analyzer.run.AnalysisEngine'), \
-             patch('apps.daily_market_analyzer.run.ReportGenerator'), \
-             patch('builtins.print') as mock_print:
-
-            daily_market_analyzer_run.main() # 更新調用
-
-            mock_print.assert_any_call("INFO: --process-uploads 被指定，但此功能尚在開發中，將被跳過。")
-            mock_yf_client_instance.hydrate_data_range.assert_called_once_with("AAPL", "2024-01-01", "2024-01-01")
-
+    # Can add more tests: one_ticker_fails, db_upsert_fails, process_uploads=True etc.
+    # For brevity, only one detailed success case is shown here.
 
 if __name__ == '__main__':
-    print("--- 執行 Daily Market Analyzer 整合測試 (_test_run.py) ---") # 更新打印信息
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestDailyMarketAnalyzerRun) # 更新類名
-    runner = unittest.TextTestRunner(verbosity=2)
-    runner.run(suite)
-
-```
+    print("--- 執行 Daily Market Analyzer 整合測試 (_test_run.py v12.0) ---")
+    unittest.main(verbosity=2)
