@@ -1,0 +1,3 @@
+# 採集官依賴套件
+requests
+tqdm

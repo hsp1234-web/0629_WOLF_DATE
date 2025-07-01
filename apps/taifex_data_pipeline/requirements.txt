@@ -1,0 +1,8 @@
+# 精煉廠依賴套件
+pandas
+psutil
+pyarrow
+duckdb
+pytz
+# pynvml # 暫時註解，因為測試環境可能不需要 GPU
+openpyxl # 添加 openpyxl 以支持 .ods 檔案的讀取 (用於 determine_parsing_recipe)
