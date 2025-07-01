@@ -55,8 +55,8 @@ def main():
         '--report-interval',
         type=str,
         default='1d',  # 將 '1d' (日線) 設為預設值
-        choices=['1m', '5m', '30m', '1h', '2h', '4h', '8h', '12h', '1d'],
-        help='用於生成市場快照報告的時間顆粒度。預設為 "1d"。'
+        choices=['1min', '5min', '30min', '1h', '2h', '4h', '8h', '12h', '1d'], # 更新 H 為 h, D 為 d
+        help='用於生成市場快照報告的時間顆粒度 (例如: 1min, 5min, 1h, 1d)。預設為 "1d"。'
     )
 
     args = parser.parse_args()

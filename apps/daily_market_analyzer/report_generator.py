@@ -242,10 +242,11 @@ class ReportGenerator:
             for index, row in df.iterrows():
                 # index 是 Timestamp 物件，需要格式化
                 # 根據 report_interval 決定時間格式
-                if self.report_interval.endswith('m') or self.report_interval.endswith('h') or self.report_interval.endswith('H'):
-                    time_str = index.strftime('%Y-%m-%d %H:%M:%S') # 如果是日內，顯示完整日期時間
-                else: # 針對 '1d' 或更長周期 (雖然此函數主要用於非 '1d')
-                    time_str = index.strftime('%Y-%m-%d')
+                # 檢查是否包含 'min' 或 'h' (不區分大小寫，適用於 e.g., '5min', '1h', '1H')
+                if 'min' in self.report_interval or 'h' in self.report_interval.lower():
+                    time_str = index.strftime('%Y-%m-%d %H:%M:%S')
+                else: # 主要針對 '1d' 或其他未來可能的非日內詳細間隔 (雖然此表格主要用於非 '1d')
+                    time_str = index.strftime('%Y-%m-%d') # 預設只顯示日期
 
                 # 處理可能的 NaN 值，以 'N/A' 顯示
                 open_val = f"{row.get('open', float('nan')):.2f}" if pd.notna(row.get('open')) else "N/A"
