@@ -77,16 +77,28 @@ class DBManager:
         if isinstance(df_to_insert.index, pd.DatetimeIndex):
             df_to_insert = df_to_insert.reset_index()
 
-        df_to_insert.columns = [col.lower() for col in df_to_insert.columns]
+        df_to_insert.columns = [col.lower() for col in df_to_insert.columns] # 確保列名小寫
 
+        # 優先處理 'index' 列（如果它是 datetime 的來源）
         if 'index' in df_to_insert.columns and 'datetime' not in df_to_insert.columns:
+            # 檢查 'index' 列是否是日期類型，如果是，則重命名為 'datetime'
+            # 這裡假設如果 'index' 是日期時間，它應該被用作 'datetime'
+            # 更嚴格的檢查可以判斷 pd.api.types.is_datetime64_any_dtype(df_to_insert['index'])
             df_to_insert.rename(columns={'index': 'datetime'}, inplace=True)
+            print(f"資訊 (DBManager): 將來自索引的 'index' 欄位重命名為 'datetime'。")
+
+
+        # 如果 'datetime' 仍然不存在，但 'date' 存在，則重命名並發出警告
+        if 'datetime' not in df_to_insert.columns and 'date' in df_to_insert.columns:
+            print(f"警告 (DBManager): DataFrame 中缺少 'datetime' 欄位，但找到了 'date' 欄位。將自動重命名 'date' 為 'datetime'。建議上游模組應直接提供 'datetime' 欄位。")
+            df_to_insert.rename(columns={'date': 'datetime'}, inplace=True)
 
         # 確保 ticker 和 interval 欄位存在 (可能來自 df.name 或已是欄位)
+        # 這部分邏輯可以保留，以處理不同來源的 DataFrame
         if 'ticker' not in df_to_insert.columns and hasattr(df, 'name') and df.name:
              df_to_insert['ticker'] = df.name
+        # interval 應由 YFinanceClient 添加
 
-        # interval 必須是 df 的一個欄位，由 yfinance_client 添加
         required_cols = ['datetime', 'ticker', 'interval', 'open', 'high', 'low', 'close', 'volume']
 
         missing_cols = [col for col in required_cols if col not in df_to_insert.columns]

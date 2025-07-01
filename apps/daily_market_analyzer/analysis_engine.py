@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Analysis Engine for Daily Market Analyzer.
+分析引擎 for 每日市場分析儀。
 負責從資料庫提取數據並計算每日市場指標。
 """
 import pandas as pd
@@ -12,13 +12,13 @@ from datetime import datetime # 需要 datetime 來處理日期字串轉換 (雖
 class AnalysisEngine:
     def __init__(self, db_manager_instance): # 修改參數名以清晰表示是實例
         """
-        初始化 AnalysisEngine。
+        初始化分析引擎 (AnalysisEngine)。
 
         Args:
             db_manager_instance: DBManager 的一個實例，用於資料庫查詢。
         """
         self.db_manager = db_manager_instance # 修改屬性名以匹配參數
-        print("INFO: AnalysisEngine 初始化完畢。")
+        print("資訊：分析引擎 (AnalysisEngine) 初始化完畢。")
 
     def analyze_daily_ticker_data(self, ticker: str, date_str: str, table_name: str = "market_ohlcv_analyzer") -> dict:
         """
@@ -34,14 +34,14 @@ class AnalysisEngine:
                   {"status": "no_data", "message": "..."}。
                   指標包括: close, prev_close, change_pct, range_pct, high, low, volume。
         """
-        # print(f"DEBUG: AnalysisEngine: Analyzing {ticker} for {date_str} from table {table_name}")
+        # print(f"調試：分析引擎：正在分析標的 {ticker} 日期 {date_str} (資料表: {table_name})")
 
         # 從 DBManager 獲取當日數據
         # 假設 query_data_for_day 返回的 DataFrame 的 index 是 DatetimeIndex (UTC)
         daily_data_df = self.db_manager.query_data_for_day(ticker, date_str, table_name)
 
         if daily_data_df.empty:
-            # print(f"DEBUG: AnalysisEngine: No data found for {ticker} on {date_str}.")
+            # print(f"調試：分析引擎：標的 {ticker} 在日期 {date_str} 無數據。")
             return {"status": "no_data", "message": f"無 {ticker} 在 {date_str} 的數據。"}
 
         # 計算指標
@@ -83,11 +83,11 @@ class AnalysisEngine:
             "range_pct": f"{volatility_range_pct:.2f}%" if volatility_range_pct != float('inf') else "極大波動或從0開始",
             "volume": f"{total_volume:,.0f}"
         }
-        # print(f"DEBUG: AnalysisEngine: Results for {ticker} on {date_str}: {analysis_result}")
+        # print(f"調試：分析引擎：標的 {ticker} 在日期 {date_str} 的分析結果: {analysis_result}")
         return analysis_result
 
 if __name__ == '__main__':
-    print("--- AnalysisEngine 測試 (需要搭配 mock DBManager) ---")
+    print("--- 分析引擎 (AnalysisEngine) 測試 (需要搭配模擬的 DBManager) ---")
 
     # 為了能獨立運行此測試，需要能夠導入 DBManager
     # 這假設 db_manager.py 與 analysis_engine.py 在同一目錄下
@@ -113,7 +113,7 @@ if __name__ == '__main__':
     # 模擬 DBManager
     class MockDBManagerForEngineTest:
         def query_data_for_day(self, ticker, date_str, table_name="default_table"):
-            print(f"MockDB(EngineTest): query_data_for_day for {ticker}, {date_str}")
+            print(f"模擬資料庫(引擎測試): query_data_for_day 針對 {ticker}, {date_str}")
             if ticker == "AAPL" and date_str == "2024-07-25":
                 data = {
                     'open': [150.0, 151.0, 150.5], 'high': [152.0, 151.5, 151.0],
@@ -127,7 +127,7 @@ if __name__ == '__main__':
             return pd.DataFrame() # Return empty DataFrame for other cases
 
         def query_previous_day_close(self, ticker, current_date_str, table_name="default_table"):
-            print(f"MockDB(EngineTest): query_previous_day_close for {ticker}, {current_date_str}")
+            print(f"模擬資料庫(引擎測試): query_previous_day_close 針對 {ticker}, {current_date_str}")
             if ticker == "AAPL" and current_date_str == "2024-07-25":
                 return 149.80 # Previous day's close for AAPL
             return None
@@ -137,7 +137,7 @@ if __name__ == '__main__':
 
     print("\n--- 測試 analyze_daily_ticker_data (有數據) ---")
     analysis_results = engine.analyze_daily_ticker_data("AAPL", "2024-07-25")
-    print(f"AAPL on 2024-07-25 analysis: {analysis_results}")
+    print(f"標的 AAPL 在 2024-07-25 的分析結果: {analysis_results}")
 
     assert analysis_results['status'] == 'success'
     assert analysis_results['close'] == '150.90' # Last 'close' in mock data
@@ -152,7 +152,7 @@ if __name__ == '__main__':
 
     print("\n--- 測試 analyze_daily_ticker_data (無數據) ---")
     analysis_no_data = engine.analyze_daily_ticker_data("MSFT", "2024-07-25")
-    print(f"MSFT on 2024-07-25 analysis: {analysis_no_data}")
+    print(f"標的 MSFT 在 2024-07-25 的分析結果: {analysis_no_data}")
     assert analysis_no_data['status'] == 'no_data'
 
-    print("\n--- AnalysisEngine 測試完畢 ---")
+    print("\n--- 分析引擎 (AnalysisEngine) 測試完畢 ---")

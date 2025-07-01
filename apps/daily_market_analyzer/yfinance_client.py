@@ -131,28 +131,78 @@ class YFinanceClient:
                 return None
 
             # 數據標準化
+            # --- 開始標準化 ---
+            # 步驟 1: 將索引（通常是日期時間）轉換為列
+            if isinstance(data.index, pd.DatetimeIndex):
+                data = data.reset_index()
+
+            # 步驟 2: 將所有列名轉為小寫
             data.columns = [col.lower() for col in data.columns]
+
+            # 步驟 3: 統一日期時間列名為 'datetime'
+            # yfinance 對於日線或更粗顆粒度數據，列名可能是 'date'
+            if 'date' in data.columns and 'datetime' not in data.columns:
+                data.rename(columns={'date': 'datetime'}, inplace=True)
+            # 如果 'Datetime' (大寫D) 存在且 'datetime' 不存在 (雖然前面已轉小寫，但多一層保護)
+            elif 'Datetime' in data.columns and 'datetime' not in data.columns: # 雖然已 lower()，但以防萬一
+                 data.rename(columns={'Datetime': 'datetime'}, inplace=True)
+
+
+            # 步驟 4: 檢查 'datetime' 列是否存在，如果不存在，則是一個問題
+            if 'datetime' not in data.columns:
+                print(f"錯誤: fetch_single_chunk: 標準化後 DataFrame 中缺少 'datetime' 欄位。股票: {ticker}, 間隔: {interval}。可用欄位: {data.columns.tolist()}")
+                # 考慮是否返回 None 或拋出異常，目前返回 None 讓上層處理
+                return None
+
+            # 步驟 5: 確保 'datetime' 列是 pandas Timestamp 物件且為 UTC 時區
+            # yfinance 通常返回的日期時間已處理好時區 (對於分鐘線通常是交易所時區，日線是 UTC date)
+            # 但此處我們要確保它是 UTC Timestamp
+            try:
+                data['datetime'] = pd.to_datetime(data['datetime'])
+                if data['datetime'].dt.tz is None:
+                    # 如果是 naive datetime (例如 yfinance 返回的 date 物件被轉為不帶時區的 timestamp)
+                    # 假設它是 UTC 日期，或者根據需要設定為特定交易所時區再轉UTC
+                    # 為了簡化，這裡直接本地化為 UTC。對於日線數據，時間部分通常是 00:00:00。
+                    data['datetime'] = data['datetime'].dt.tz_localize('UTC')
+                else:
+                    data['datetime'] = data['datetime'].dt.tz_convert('UTC')
+            except Exception as e:
+                print(f"錯誤: fetch_single_chunk: 轉換 'datetime' 欄位時出錯: {e}. 股票: {ticker}, 間隔: {interval}.")
+                return None
+
+            # 步驟 6: 處理 'volume' 欄位
             if 'volume' not in data.columns:
-                data['volume'] = 0
+                data['volume'] = 0 # 如果沒有 volume 欄位，則填充為 0
             data['volume'] = data['volume'].fillna(0).astype('int64')
 
-            if data.index.tz is None:
-                data.index = data.index.tz_localize('UTC')
-            else:
-                data.index = data.index.tz_convert('UTC')
-
-            # 為合併後的數據添加 interval 資訊
+            # 步驟 7: 添加 'interval' 和 'ticker' 資訊欄位
             data['interval'] = interval
-            data['ticker'] = ticker # 也加入 ticker 資訊，方便合併多個 ticker 的數據
+            data['ticker'] = ticker
 
-            print(f"INFO: fetch_single_chunk: 成功獲取 {len(data)} 筆數據。")
+            # 步驟 8: 選擇並排序最終需要的欄位 (與 DBManager 期望的順序和名稱一致)
+            # DBManager 期望的欄位: ['datetime', 'ticker', 'interval', 'open', 'high', 'low', 'close', 'volume']
+            final_columns = ['datetime', 'ticker', 'interval', 'open', 'high', 'low', 'close', 'volume']
+            missing_ohlc_cols = [col for col in ['open', 'high', 'low', 'close'] if col not in data.columns]
+            if missing_ohlc_cols:
+                print(f"警告: fetch_single_chunk: DataFrame 缺少部分OHLC欄位: {missing_ohlc_cols}。股票: {ticker}, 間隔: {interval}。將嘗試填充為0。")
+                for col in missing_ohlc_cols:
+                    data[col] = 0.0 # 或 np.nan，但 DBManager 可能期望 float
+
+            try:
+                data = data[final_columns]
+            except KeyError as e:
+                print(f"錯誤: fetch_single_chunk: 選取最終欄位時發生 KeyError: {e}。股票: {ticker}, 間隔: {interval}。可用欄位: {data.columns.tolist()}")
+                return None
+
+            print(f"INFO: fetch_single_chunk: 成功獲取並標準化 {len(data)} 筆數據。")
             return data
 
         except Exception as e:
-            print(f"錯誤: fetch_single_chunk: 抓取 {ticker} ({interval}, {chunk_start_date_str}-{chunk_end_date_str}) 失敗: {e}")
+            # 捕獲更廣泛的異常，包括可能的 yfinance 內部錯誤或網絡問題
+            print(f"錯誤: fetch_single_chunk: 抓取或處理 {ticker} ({interval}, {chunk_start_date_str}-{chunk_end_date_str}) 失敗: {type(e).__name__} - {e}")
             return None
 
-    def hydrate_data_range(self, ticker: str, start_date_str: str, end_date_str: str) -> pd.DataFrame | None:
+    def hydrate_data_range(self, ticker: str, start_date_str: str, end_date_str: str) -> tuple[pd.DataFrame | None, dict]:
         """
         核心方法：全自動回填指定股票在給定時間範圍內的歷史數據。
         它會從最精細的顆粒度開始嘗試，使用時間分塊和迭代降級策略。
@@ -227,27 +277,62 @@ class YFinanceClient:
                 # 更新執行日誌 (無論成功或失敗)
                 # 假設 chunk_df 包含的日期都在 chunk_start_str 和 (chunk_end_str - 1 day) 之間
                 # 遍歷此 chunk 覆蓋的每一天來更新日誌
-                current_chunk_date = datetime.strptime(chunk_start_str, "%Y-%m-%d")
-                actual_chunk_end_date = datetime.strptime(chunk_end_str, "%Y-%m-%d") - timedelta(days=1)
+                current_chunk_date_obj = datetime.strptime(chunk_start_str, "%Y-%m-%d")
+                actual_chunk_end_date_obj = datetime.strptime(chunk_end_str, "%Y-%m-%d") - timedelta(days=1)
 
-                while current_chunk_date <= actual_chunk_end_date:
-                    log_date_str = current_chunk_date.strftime("%Y-%m-%d")
+                temp_current_date_for_log = current_chunk_date_obj
+                while temp_current_date_for_log <= actual_chunk_end_date_obj:
+                    log_date_str = temp_current_date_for_log.strftime("%Y-%m-%d")
                     if log_date_str in execution_log: # 只更新請求範圍內的日期
                         if chunk_df is not None and not chunk_df.empty:
-                            # 計算當日數據筆數
-                            daily_rows_in_chunk = chunk_df[chunk_df.index.date == current_chunk_date.date()]
-                            execution_log[log_date_str][ticker] = {
-                                "status": "success_partial" if len(date_chunks) > 1 else "success", # 標記是否只是部分
+                            # 確保 'datetime' 列是 datetime64[ns, UTC] 類型
+                            if 'datetime' not in chunk_df.columns or not pd.api.types.is_datetime64_any_dtype(chunk_df['datetime']):
+                                try:
+                                    # 嘗試轉換，如果 chunk_df['datetime'] 不存在或無法轉換，會拋異常
+                                    if 'datetime' in chunk_df.columns:
+                                        chunk_df['datetime'] = pd.to_datetime(chunk_df['datetime'], utc=True)
+                                    else: # 如果連 datetime 都沒有（fetch_single_chunk 出問題）
+                                        raise ValueError("chunk_df is missing 'datetime' column for log update")
+                                except Exception as e_conv:
+                                    print(f"錯誤(hydrate_data_range): chunk_df['datetime'] 處理失敗 for {ticker} on {log_date_str}: {e_conv}")
+                                    current_log_status = execution_log[log_date_str][ticker].get("status", "unknown_chunk_outcome")
+                                    current_log_message = execution_log[log_date_str][ticker].get("message", "")
+                                    execution_log[log_date_str][ticker].update({
+                                        "status": "failed_datetime_processing_in_log" if current_log_status not in ['success', 'skipped_1m_due_to_30day_limit'] else current_log_status,
+                                        "count": 0, # 無法按天計數
+                                        "message": current_log_message + f" Datetime processing error in chunk. "
+                                    })
+                                    temp_current_date_for_log += timedelta(days=1)
+                                    continue # 跳過此日期的計數更新
+
+                            # 按日期篩選 DataFrame 中的行
+                            # 確保比較的日期也是 date 物件
+                            daily_rows_in_chunk = chunk_df[chunk_df['datetime'].dt.date == temp_current_date_for_log.date()]
+
+                            current_log_message = execution_log[log_date_str][ticker].get("message","")
+                            if not isinstance(current_log_message, str): current_log_message = str(current_log_message)
+
+                            new_status = "success" # 預設為成功
+                            if len(date_chunks) > 1 and not daily_rows_in_chunk.empty : new_status = "success_partial"
+                            elif daily_rows_in_chunk.empty : new_status = execution_log[log_date_str][ticker].get("status", "no_data_in_chunk_for_day")
+
+
+                            execution_log[log_date_str][ticker].update({
+                                "status": new_status,
                                 "interval": interval,
                                 "count": len(daily_rows_in_chunk),
-                                "message": f"Successfully fetched {len(daily_rows_in_chunk)} rows for {log_date_str} with {interval}."
-                            }
-                        else: # chunk_df is None or empty
-                            execution_log[log_date_str][ticker] = {
-                                "status": "failed_chunk", "interval": interval, "count": 0,
-                                "message": f"Failed to fetch data for chunk covering {log_date_str} with {interval}."
-                            }
-                    current_chunk_date += timedelta(days=1)
+                                "message": current_log_message + \
+                                           (f" Fetched {len(daily_rows_in_chunk)} rows for {log_date_str} with {interval} in chunk." if not daily_rows_in_chunk.empty else f" No rows for {log_date_str} in this chunk with {interval}.")
+                            })
+                        else: # chunk_df is None or empty (抓取此 chunk 失敗)
+                             if execution_log[log_date_str][ticker]['status'] not in ['success', 'skipped_1m_due_to_30day_limit']:
+                                current_log_message = execution_log[log_date_str][ticker].get("message","")
+                                if not isinstance(current_log_message, str): current_log_message = str(current_log_message)
+                                execution_log[log_date_str][ticker].update({
+                                    "status": "failed_chunk", "interval": interval, "count": 0,
+                                    "message": current_log_message + f" Failed to fetch/process chunk covering {log_date_str} with {interval}."
+                                })
+                    temp_current_date_for_log += timedelta(days=1)
 
                 if chunk_df is not None and not chunk_df.empty:
                     current_interval_all_data_dfs.append(chunk_df)
@@ -257,36 +342,73 @@ class YFinanceClient:
                     break # 跳出此 interval 的 chunks 循環, 嘗試下一個更粗的 interval
 
             if all_chunks_successful_for_this_interval and current_interval_all_data_dfs:
-                final_df = pd.concat(current_interval_all_data_dfs, ignore_index=False) # 保留 DatetimeIndex
-                final_df['ticker'] = ticker
-                final_df['interval'] = interval # 確保最終 df 也有 interval (儘管 chunk 已有)
+                # 將所有 chunk 的 DataFrame 合併，注意此時索引可能不唯一，或者不是 datetime
+                # fetch_single_chunk 返回的 DataFrame 已經將 datetime 作為列
+                final_df = pd.concat(current_interval_all_data_dfs, ignore_index=True)
+                # 此處不需要再賦值 final_df['ticker'] 和 final_df['interval']，因為 fetch_single_chunk 已處理
 
-                # 再次遍歷 final_df 的日期，確保 execution_log 的 status 和 count 是最終的
-                for date_str_in_df in final_df.index.strftime("%Y-%m-%d").unique():
-                    if date_str_in_df in execution_log:
-                         daily_rows_final = final_df[final_df.index.strftime("%Y-%m-%d") == date_str_in_df]
-                         execution_log[date_str_in_df][ticker] = {
-                            "status": "success",
-                            "interval": interval,
-                            "count": len(daily_rows_final),
-                            "message": f"Final data for {date_str_in_df} with {interval}."
-                        }
+                # 確保 final_df['datetime'] 是 datetime64[ns, UTC]
+                if 'datetime' not in final_df.columns or not pd.api.types.is_datetime64_any_dtype(final_df['datetime']):
+                    try:
+                        if 'datetime' in final_df.columns:
+                            final_df['datetime'] = pd.to_datetime(final_df['datetime'], utc=True)
+                        else:
+                             raise ValueError("final_df is missing 'datetime' column for final log update")
+                    except Exception as e_final_conv:
+                         print(f"錯誤(hydrate_data_range): final_df['datetime'] 處理失敗 for {ticker}: {e_final_conv}")
+                         print(f"警告(hydrate_data_range): 因 final_df datetime 處理失敗，執行日誌可能不完全準確。Ticker: {ticker}")
+                         # 即使 datetime 處理失敗，仍然返回已獲取的數據和當前 execution_log
+                         return final_df, execution_log
+
+                # 使用 'datetime' 列來遍歷日期並更新 execution_log
+                # 確保 final_df['datetime'] 列存在且類型正確後才進行遍歷
+                unique_dates_in_final_df = final_df['datetime'].dt.normalize().unique()
+
+                for date_obj_in_final_df in unique_dates_in_final_df:
+                    date_str_in_final_df_range = date_obj_in_final_df.strftime('%Y-%m-%d')
+
+                    if date_str_in_final_df_range in execution_log and \
+                       ticker in execution_log[date_str_in_final_df_range]:
+
+                        daily_rows_final = final_df[final_df['datetime'].dt.date == date_obj_in_final_df.date()]
+
+                        if not daily_rows_final.empty:
+                            # 只有當天確實有數據才更新為最終的 success 狀態
+                            execution_log[date_str_in_final_df_range][ticker] = {
+                                "status": "success",
+                                "interval": interval,
+                                "count": len(daily_rows_final),
+                                "message": f"Final data for {date_str_in_final_df_range} with {interval} ({len(daily_rows_final)} rows)."
+                            }
+                        # 如果 daily_rows_final 為空, 但 execution_log 中該日期之前可能已有記錄 (例如來自 chunk 級別的 no_data_in_chunk_for_day)
+                        # 這裡的邏輯是，如果 final_df 中某天沒有數據，但它在請求範圍內，其日誌狀態應反映這一點
+                        # 但由於我們是從 final_df 的 unique_dates 遍歷，所以 daily_rows_final 不應為空
+                        # 此處的 else if 更多是防禦性編碼，或處理更複雜的日誌合併邏輯（如果需要）
+                        elif execution_log[date_str_in_final_df_range][ticker].get('status') != 'success':
+                            current_message = execution_log[date_str_in_final_df_range][ticker].get("message", "")
+                            if not isinstance(current_message, str): current_message = str(current_message)
+                            execution_log[date_str_in_final_df_range][ticker]['message'] = current_message + \
+                                f" No data for {date_str_in_final_df_range} found in final combined df with {interval} (unexpected, check logic)."
 
                 print(f"成功: hydrate_data_range: 已使用顆粒度 '{interval}' 完成 {ticker} 在 {start_date_str} 到 {end_date_str} 的所有數據回填。共 {len(final_df)} 筆。")
                 print(f"===== 數據回填任務結束 (成功): Ticker={ticker} =====")
                 return final_df, execution_log
-            elif not current_interval_all_data_dfs and all_chunks_successful_for_this_interval:
+            elif not current_interval_all_data_dfs and all_chunks_successful_for_this_interval: # 所有 chunk 成功但都沒數據
                  print(f"INFO: hydrate_data_range: 顆粒度 '{interval}' 所有區塊均未返回數據(可能該時段無交易)，但未發生API錯誤。嘗試下一個顆粒度。")
                  # 更新日誌，標記這些日期使用此 interval 時無數據
-                 for date_str_in_range in request_date_range_str:
-                     if execution_log[date_str_in_range][ticker]['status'] != 'success': # 避免覆蓋已成功的更細顆粒度日誌
-                        execution_log[date_str_in_range][ticker] = {
-                            "status": "no_data_for_interval", "interval": interval, "count": 0,
-                            "message": f"No data found for {date_str_in_range} with {interval} after all chunks."
-                        }
-            else: # all_chunks_successful_for_this_interval is False
+                 for date_str_in_range in request_date_range_str: # 遍歷請求的整個日期範圍
+                     # 只有在之前的狀態不是更明確的成功或特定跳過時才更新
+                     if execution_log[date_str_in_range][ticker]['status'] not in ['success', 'skipped_1m_due_to_30day_limit']:
+                        execution_log[date_str_in_range][ticker].update({ # 使用 update 而不是覆蓋
+                            "status": "no_data_for_interval",
+                            "interval": interval, # 記錄是哪個 interval 沒數據
+                            "count": 0,
+                            "message": execution_log[date_str_in_range][ticker].get("message","") + f" No data found for {date_str_in_range} with {interval} after all chunks."
+                        })
+            else: # all_chunks_successful_for_this_interval is False (即某個 chunk 失敗了)
                 print(f"INFO: hydrate_data_range: 顆粒度 '{interval}' 未能成功回填所有區塊。嘗試下一個更粗的顆粒度。")
-                # execution_log 應已被 chunk 級別的失敗更新
+                # execution_log 應已被 chunk 級別的失敗更新 (例如 failed_chunk, 或 skipped_1m)
+                # 無需在此處再次遍歷 request_date_range_str 來更新日誌，因為失敗的 chunk 已處理其覆蓋的日期
 
             time.sleep(0.5) # 在嘗試不同 interval 之間稍作停頓
 
@@ -307,63 +429,133 @@ if __name__ == '__main__':
     client = YFinanceClient()
 
     # 測試日期範圍和股票代碼
-    test_ticker = "AAPL" # 或者用一個你知道數據較少的股票測試降級
-    # test_ticker = "^VIX" # VIX 通常沒有分鐘線數據
-    # test_ticker = "FAKEBADTICKER"
+    test_ticker_aapl = "AAPL"
+    test_ticker_vix = "^VIX" # 通常沒有分鐘線數據
+    test_ticker_fake = "FAKEBADTICKERXYZ"
 
-    # 測試案例 1: 短時間範圍，1m 數據應該存在 (例如最近幾天)
-    # end_date_dt = datetime.now()
-    # start_date_dt = end_date_dt - timedelta(days=3)
-    # test_start_date = start_date_dt.strftime("%Y-%m-%d")
-    # test_end_date = end_date_dt.strftime("%Y-%m-%d")
+    # 測試案例 1: AAPL，近期數據，應能獲取 1m
+    # 將結束日期設為昨天，開始日期為三天前，以確保在30天窗口內
+    end_date_dt_recent = datetime.now() - timedelta(days=1)
+    start_date_dt_recent = end_date_dt_recent - timedelta(days=2) # 抓取3天數據
+    test_start_recent = start_date_dt_recent.strftime("%Y-%m-%d")
+    test_end_recent = end_date_dt_recent.strftime("%Y-%m-%d")
 
-    # 為了可重複測試，使用固定日期
-    test_start_date = "2024-07-01"
-    test_end_date = "2024-07-03" # 抓取 7/1, 7/2, 7/3 三天的數據
+    print(f"\n--- 測試案例 1: {test_ticker_aapl}, 近期範圍: [{test_start_recent} to {test_end_recent}] ---")
+    hydrated_data_aapl, exec_log_aapl = client.hydrate_data_range(test_ticker_aapl, test_start_recent, test_end_recent)
 
-    print(f"\n--- 測試案例 1: {test_ticker}, Range: [{test_start_date} to {test_end_date}] ---")
-    hydrated_data = client.hydrate_data_range(test_ticker, test_start_date, test_end_date)
-
-    if hydrated_data is not None and not hydrated_data.empty:
-        print(f"\n--- {test_ticker} 數據回填結果 ---")
-        print(f"成功獲取 {len(hydrated_data)} 筆數據。")
-        print(f"使用的顆粒度: {hydrated_data['interval'].unique()}")
-        print("數據預覽 (前5筆):")
-        print(hydrated_data.head())
-        print("數據預覽 (後5筆):")
-        print(hydrated_data.tail())
-        print("數據資訊:")
-        hydrated_data.info()
+    if hydrated_data_aapl is not None and not hydrated_data_aapl.empty:
+        print(f"INFO: {test_ticker_aapl} 成功獲取 {len(hydrated_data_aapl)} 筆數據。")
+        print(f"INFO: 使用的顆粒度: {hydrated_data_aapl['interval'].unique()}")
+        # 驗證 execution_log
+        print("INFO: Execution Log (AAPL 近期) 預覽:")
+        for date_str, ticker_log in exec_log_aapl.items():
+            if test_ticker_aapl in ticker_log:
+                print(f"  {date_str}: {ticker_log[test_ticker_aapl]}")
+                # 基本斷言
+                assert 'status' in ticker_log[test_ticker_aapl]
+                assert 'interval' in ticker_log[test_ticker_aapl]
+                assert 'count' in ticker_log[test_ticker_aapl]
+                if ticker_log[test_ticker_aapl]['status'] == 'success':
+                    assert ticker_log[test_ticker_aapl]['count'] > 0
+                    assert ticker_log[test_ticker_aapl]['interval'] is not None # 應該是 '1m' 或其他有效 interval
     else:
-        print(f"未能為 {test_ticker} 在指定範圍內回填數據。")
+        print(f"WARN: {test_ticker_aapl} 未能回填近期數據。檢查API或日期範圍。")
+    print(f"--- {test_ticker_aapl} 近期數據日誌 (部分): ---")
+    # print(exec_log_aapl)
 
-    # 測試案例 2: 更長的時間範圍，可能會觸發多次分塊
-    # test_start_date_long = "2024-06-01"
-    # test_end_date_long = "2024-07-10"
-    # print(f"\n--- 測試案例 2: {test_ticker}, Long Range: [{test_start_date_long} to {test_end_date_long}] ---")
-    # hydrated_data_long = client.hydrate_data_range(test_ticker, test_start_date_long, test_end_date_long)
-    # if hydrated_data_long is not None and not hydrated_data_long.empty:
-    # print(f"長範圍測試成功獲取 {len(hydrated_data_long)} 筆數據，顆粒度: {hydrated_data_long['interval'].unique()}")
-    # else:
-    # print(f"長範圍測試未能為 {test_ticker} 回填數據。")
 
-    # 測試案例 3: 無效股票代碼
-    # print(f"\n--- 測試案例 3: FAKEBADTICKER ---")
-    # hydrated_data_fake = client.hydrate_data_range("FAKEBADTICKER", "2024-01-01", "2024-01-05")
-    # if hydrated_data_fake is None:
-    # print("無效股票代碼測試成功，未返回數據 (符合預期)。")
-    # else:
-    # print(f"錯誤：無效股票代碼不應返回數據，卻得到 {len(hydrated_data_fake)} 筆。")
+    # 測試案例 2: AAPL，遠期數據 (>30天前)，1m 應被跳過
+    # 固定一個較早的日期範圍，確保它肯定超過30天
+    test_start_old = "2023-01-03" # 週二
+    test_end_old = "2023-01-04"   # 週三 (抓兩天數據)
+    print(f"\n--- 測試案例 2: {test_ticker_aapl}, 遠期範圍: [{test_start_old} to {test_end_old}] (預期跳過1m) ---")
+    hydrated_data_aapl_old, exec_log_aapl_old = client.hydrate_data_range(test_ticker_aapl, test_start_old, test_end_old)
 
-    # 測試案例 4: ^VIX (通常1m, 5m等會失敗，最終可能用1d)
-    # test_start_vix = "2024-07-01"
-    # test_end_vix = "2024-07-08" # 一週數據
-    # print(f"\n--- 測試案例 4: ^VIX, Range: [{test_start_vix} to {test_end_vix}] ---")
-    # vix_data = client.hydrate_data_range("^VIX", test_start_vix, test_end_vix)
-    # if vix_data is not None and not vix_data.empty:
-    # print(f"VIX 測試成功獲取 {len(vix_data)} 筆數據，顆粒度: {vix_data['interval'].unique()}")
-    # print(vix_data.head())
-    # else:
-    # print(f"VIX 測試未能回填數據。")
+    if hydrated_data_aapl_old is not None and not hydrated_data_aapl_old.empty:
+        print(f"INFO: {test_ticker_aapl} (遠期) 成功獲取 {len(hydrated_data_aapl_old)} 筆數據。")
+        print(f"INFO: 使用的顆粒度: {hydrated_data_aapl_old['interval'].unique()}") # 應該不是 '1m'
+        assert '1m' not in hydrated_data_aapl_old['interval'].unique()
+    else:
+        print(f"WARN: {test_ticker_aapl} (遠期) 未能回填數據。")
 
-    print("\n--- YFinanceClient (Data Hydrator) 測試完畢 ---")
+    print("INFO: Execution Log (AAPL 遠期) 預覽:")
+    first_day_log_found = False
+    for date_str, ticker_log in exec_log_aapl_old.items():
+        if test_ticker_aapl in ticker_log:
+            print(f"  {date_str}: {ticker_log[test_ticker_aapl]}")
+            # 檢查遠期第一天的日誌是否記錄了跳過1m，或者成功獲取了其他 interval
+            # 由於 fallback 機制，如果 1m 被跳過，它會嘗試 5m 等。
+            # 所以 status 可能是 success (來自 5m)，或者 skipped_1m... 如果 hydrate_data_range 被修改為這樣記錄
+            # 當前實現是，如果1m的chunk因超時跳過，整個1m的嘗試會失敗，然後fallback到5m等。
+            # 所以我們應該檢查最終成功的interval不是1m。
+            if ticker_log[test_ticker_aapl]['status'] == 'success':
+                 assert ticker_log[test_ticker_aapl]['interval'] != '1m'
+            first_day_log_found = True
+    assert first_day_log_found, "Execution log for AAPL (old) seems empty or malformed."
+    # print(f"--- {test_ticker_aapl} 遠期數據日誌 (部分): ---")
+    # print(exec_log_aapl_old)
+
+
+    # 測試案例 3: ^VIX (通常1m, 5m等會失敗，最終可能用1d)
+    test_start_vix = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d") # 確保在30天內，但VIX仍可能無1m數據
+    test_end_vix = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d")
+    print(f"\n--- 測試案例 3: {test_ticker_vix}, Range: [{test_start_vix} to {test_end_vix}] ---")
+    vix_data, vix_exec_log = client.hydrate_data_range(test_ticker_vix, test_start_vix, test_end_vix)
+    if vix_data is not None and not vix_data.empty:
+        print(f"INFO: {test_ticker_vix} 測試成功獲取 {len(vix_data)} 筆數據，顆粒度: {vix_data['interval'].unique()}")
+        # 通常VIX的最高頻率是1d，如果獲取到更高頻率，那也沒問題，但不太可能。
+        # 主要檢查 execution_log 是否合理
+    else:
+        print(f"WARN: {test_ticker_vix} 測試未能回填數據。")
+    print("INFO: Execution Log (VIX) 預覽:")
+    for date_str, ticker_log in vix_exec_log.items():
+         if test_ticker_vix in ticker_log:
+            print(f"  {date_str}: {ticker_log[test_ticker_vix]}")
+            if ticker_log[test_ticker_vix]['status'] == 'success':
+                assert ticker_log[test_ticker_vix]['interval'] is not None
+
+    # 測試案例 4: 無效股票代碼
+    print(f"\n--- 測試案例 4: {test_ticker_fake} ---")
+    fake_data, fake_exec_log = client.hydrate_data_range(test_ticker_fake, test_start_recent, test_end_recent)
+    if fake_data is None or fake_data.empty: # 預期是 None
+        print("INFO: 無效股票代碼測試成功，未返回數據 (符合預期)。")
+    else:
+        print(f"ERROR：無效股票代碼不應返回數據，卻得到 {len(fake_data)} 筆。")
+    print("INFO: Execution Log (FAKE) 預覽:")
+    for date_str, ticker_log in fake_exec_log.items():
+        if test_ticker_fake in ticker_log:
+            print(f"  {date_str}: {ticker_log[test_ticker_fake]}")
+            assert ticker_log[test_ticker_fake]['status'] == 'failed_all_intervals'
+            assert ticker_log[test_ticker_fake]['count'] == 0
+            assert ticker_log[test_ticker_fake]['interval'] is None
+
+    # 測試案例 5: 獲取日線數據 (AAPL，遠期)，檢查 'datetime' 列
+    test_start_daily = "2023-02-01"
+    test_end_daily = "2023-02-03" # 獲取三天日線數據
+    print(f"\n--- 測試案例 5: {test_ticker_aapl}, 日線數據檢查: [{test_start_daily} to {test_end_daily}] ---")
+    daily_data_df, daily_exec_log = client.hydrate_data_range(test_ticker_aapl, test_start_daily, test_end_daily)
+
+    if daily_data_df is not None and not daily_data_df.empty:
+        print(f"INFO: {test_ticker_aapl} (日線測試) 成功獲取 {len(daily_data_df)} 筆數據。")
+        print(f"INFO: 使用的顆粒度: {daily_data_df['interval'].unique()}")
+        assert '1d' in daily_data_df['interval'].unique() # 應該是 '1d'
+
+        print("INFO: DataFrame (日線測試) 預覽 (前2筆):")
+        print(daily_data_df.head(2))
+        daily_data_df.info() # 打印詳細信息以供檢查
+
+        # 關鍵驗證：'datetime' 列是否存在且類型正確
+        assert 'datetime' in daily_data_df.columns, "DataFrame 中缺少 'datetime' 欄位"
+        assert pd.api.types.is_datetime64_any_dtype(daily_data_df['datetime']), "'datetime' 欄位類型不正確"
+        assert daily_data_df['datetime'].dt.tz is not None and daily_data_df['datetime'].dt.tz.zone == 'UTC', "'datetime' 欄位時區不正確或非UTC"
+
+        print("INFO: Execution Log (AAPL 日線測試) 預覽:")
+        for date_str, ticker_log in daily_exec_log.items():
+            if test_ticker_aapl in ticker_log:
+                print(f"  {date_str}: {ticker_log[test_ticker_aapl]}")
+                if ticker_log[test_ticker_aapl]['status'] == 'success':
+                    assert ticker_log[test_ticker_aapl]['interval'] == '1d'
+    else:
+        print(f"WARN: {test_ticker_aapl} (日線測試) 未能回填數據。")
+
+    print("\n--- YFinanceClient (Daily Market Analyzer) 測試完畢 ---")

@@ -1,45 +1,40 @@
 # -*- coding: utf-8 -*-
 """
-Data Hydrator 主執行入口。
+每日市場分析儀 主執行入口。
 
-接收命令列參數，協調 YFinanceClient 進行數據回填，
-使用 DBManager 將數據存入資料庫，並使用 ReportGenerator 生成總結報告。
+接收命令列參數，協調 YFinanceClient 進行數據擷取與考古，
+使用 DBManager 將數據存入資料庫，透過 AnalysisEngine 分析數據，
+最後使用 ReportGenerator 生成每日市場洞察報告。
 """
 import argparse
 import sys
 import os
 from datetime import datetime
-import pandas as pd # 為了處理 DataFrame 的 min/max date
+import pandas as pd
 
 # 設定專案路徑，確保可以正確匯入其他模組
 def setup_project_path():
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-        print(f"DEBUG: Project root added to sys.path: {project_root}")
+        # print(f"DEBUG: Project root added to sys.path: {project_root}") # 移除調試信息
 
 setup_project_path()
 
-# 延後導入，確保路徑已設定
-# from apps.data_hydrator.yfinance_client import YFinanceClient
-# from apps.data_hydrator.db_manager import DBManager
-# from apps.data_hydrator.report_generator import ReportGenerator
-
-# 嘗試解決 ModuleNotFoundError
 try:
     from apps.daily_market_analyzer.yfinance_client import YFinanceClient
     from apps.daily_market_analyzer.db_manager import DBManager
-    from apps.daily_market_analyzer.analysis_engine import AnalysisEngine # 新增
+    from apps.daily_market_analyzer.analysis_engine import AnalysisEngine
     from apps.daily_market_analyzer.report_generator import ReportGenerator
-    print("DEBUG: Successfully imported YFinanceClient, DBManager, AnalysisEngine, ReportGenerator")
+    # print("DEBUG: Successfully imported YFinanceClient, DBManager, AnalysisEngine, ReportGenerator") # 移除調試信息
 except ModuleNotFoundError as e:
-    print(f"ERROR: ModuleNotFoundError during initial imports in run.py: {e}")
-    print(f"DEBUG: Current sys.path: {sys.path}")
-    try:
-        print(f"DEBUG: Contents of 'apps/': {os.listdir('apps')}")
-        print(f"DEBUG: Contents of 'apps/daily_market_analyzer/': {os.listdir('apps/daily_market_analyzer')}")
-    except FileNotFoundError:
-        print("DEBUG: 'apps/' or 'apps/daily_market_analyzer/' directory not found from current working directory.")
+    print(f"錯誤：導入模組時發生錯誤 (ModuleNotFoundError): {e}") # 中文化
+    # print(f"DEBUG: Current sys.path: {sys.path}") # 保留或移除調試信息
+    # try:
+    #     print(f"DEBUG: Contents of 'apps/': {os.listdir('apps')}")
+    #     print(f"DEBUG: Contents of 'apps/daily_market_analyzer/': {os.listdir('apps/daily_market_analyzer')}")
+    # except FileNotFoundError:
+    #     print("DEBUG: 'apps/' or 'apps/daily_market_analyzer/' directory not found from current working directory.")
     raise
 
 def main():
@@ -47,25 +42,26 @@ def main():
     主執行函數 for Daily Market Analyzer。
     """
     parser = argparse.ArgumentParser(description="每日市場洞察報告與智能數據考古引擎。")
-    parser.add_argument("--tickers", required=True, help="要分析的標的列表，以逗號分隔。")
-    parser.add_argument("--start-date", required=True, help="分析開始日期 (YYYY-MM-DD)。")
-    parser.add_argument("--end-date", required=True, help="分析結束日期 (YYYY-MM-DD)。")
+    parser.add_argument("--tickers", required=True, help="要分析的標的列表，以逗號分隔 (例如: AAPL,MSFT)。") # 中文化 help
+    parser.add_argument("--start-date", required=True, help="分析起始日期 (格式: YYYY-MM-DD)。") # 中文化 help
+    parser.add_argument("--end-date", required=True, help="分析結束日期 (格式: YYYY-MM-DD)。") # 中文化 help
     parser.add_argument("--db-path", default="data_workspace/daily_market_analyzer.duckdb",
-                        help="DuckDB 資料庫檔案路徑。")
-    parser.add_argument("--table-name", default="market_ohlcv_data", # 更改預設表名
-                        help="資料庫中儲存 OHLCV 數據的表格名稱。")
+                        help="DuckDB 資料庫檔案路徑。") # 中文化 help
+    parser.add_argument("--table-name", default="market_ohlcv_data",
+                        help="資料庫中儲存 OHLCV 數據的表格名稱。") # 中文化 help
     parser.add_argument("--process-uploads", action="store_true",
-                        help="若指定，則處理 'uploads' 資料夾 (此功能待實現)。")
+                        help="若指定，則處理 'uploads' 資料夾 (此功能待實現)。") # 中文化 help
 
     args = parser.parse_args()
 
-    print("--- 每日市場洞察報告引擎 v11.1 ---") # 更新應用名稱/版本
+    print("--- 每日市場洞察報告引擎 v12.0 ---") # 更新版本號
     overall_start_time = datetime.now()
-    print(f"任務開始時間: {overall_start_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}") # 添加時區信息
-    print(f"參數: Tickers='{args.tickers}', StartDate='{args.start_date}', EndDate='{args.end_date}', DB='{args.db_path}', Table='{args.table_name}'")
+    # 時區信息 %Z%z 可能因環境導致不同輸出，可考慮標準化為 UTC 或移除
+    print(f"任務開始時間: {overall_start_time.strftime('%Y-%m-%d %H:%M:%S')}") # 簡化時間格式
+    print(f"執行參數: 標的='{args.tickers}', 起始日='{args.start_date}', 結束日='{args.end_date}', 資料庫='{args.db_path}', 資料表='{args.table_name}'") # 中文化
 
     if args.process_uploads:
-        print("INFO: --process-uploads 被指定，但此功能尚在開發中，將被跳過。")
+        print("資訊：--process-uploads 選項已指定，但此功能尚在開發中，將被略過。") # 中文化
         # TODO: 添加 file_processor 邏輯
 
     # 初始化組件
@@ -81,7 +77,7 @@ def main():
     overall_execution_log = {} # 用於聚合所有 tickers 的執行日誌
 
     for ticker in tickers_list:
-        print(f"\n--- 開始處理標的: {ticker} ---")
+        print(f"\n--- 開始處理標的: {ticker} ---") # 中文化
         # hydrate_data_range 現在返回 (DataFrame | None, dict_execution_log)
         hydrated_df, ticker_execution_log = yf_client.hydrate_data_range(ticker, args.start_date, args.end_date)
 
@@ -92,36 +88,40 @@ def main():
             overall_execution_log[date_key].update(ticker_daily_log_value) # ticker_daily_log_value 應為 {ticker: log_info}
 
         if hydrated_df is not None and not hydrated_df.empty:
-            print(f"INFO: 標的 {ticker} 數據成功回填 {len(hydrated_df)} 筆。準備寫入資料庫...")
+            print(f"資訊：標的 {ticker} 成功擷取 {len(hydrated_df)} 筆數據。準備寫入資料庫...") # 中文化
             try:
                 db_manager.upsert_data(hydrated_df, table_name=args.table_name)
-                print(f"INFO: 標的 {ticker} 數據成功寫入資料庫。")
+                print(f"資訊：標的 {ticker} 數據成功寫入資料庫。") # 中文化
             except Exception as e:
-                print(f"錯誤: 標的 {ticker} 數據寫入資料庫失敗: {e}")
+                print(f"錯誤：標的 {ticker} 數據寫入資料庫失敗: {e}") # 中文化
                 # 更新 overall_execution_log 中對應日期的狀態為 db_error
                 for date_str_key in pd.date_range(args.start_date, args.end_date).strftime('%Y-%m-%d'):
                     if date_str_key in overall_execution_log and ticker in overall_execution_log[date_str_key]:
                          overall_execution_log[date_str_key][ticker]['status'] = 'db_upsert_failed'
-                         overall_execution_log[date_str_key][ticker]['message'] += f" DB upsert error: {str(e)}"
+                         # 確保 message 是字串且可附加
+                         base_message = overall_execution_log[date_str_key][ticker].get('message', "")
+                         if not isinstance(base_message, str): base_message = str(base_message)
+                         overall_execution_log[date_str_key][ticker]['message'] = base_message + f" 資料庫更新失敗: {str(e)}" # 中文化
         else:
-            print(f"INFO: 標的 {ticker} 未能回填任何數據 (基於 yfinance_client 的日誌)。")
+            print(f"資訊：標的 {ticker} 未擷取到任何數據 (詳見 yfinance_client 日誌)。") # 中文化
             # overall_execution_log 應已由 yfinance_client 更新了此 ticker 的失敗狀態
 
-        print(f"--- 標的: {ticker} 處理完畢 ---")
+        print(f"--- 標的: {ticker} 處理完畢 ---") # 中文化
 
     overall_end_time = datetime.now()
     task_duration_seconds = (overall_end_time - overall_start_time).total_seconds()
-    print(f"\n--- 所有標的處理完成 ---")
-    print(f"任務結束時間: {overall_end_time.strftime('%Y-%m-%d %H:%M:%S %Z%z')}")
-    print(f"總執行時長: {task_duration_seconds:.2f} 秒")
+    print(f"\n--- 所有標的處理完成 ---") # 中文化
+    print(f"任務結束時間: {overall_end_time.strftime('%Y-%m-%d %H:%M:%S')}") # 簡化時間格式
+    print(f"總執行時長: {task_duration_seconds:.2f} 秒") # 中文化
 
     # 初始化報告生成器 (傳入合併後的日誌和分析引擎實例)
     report_gen = ReportGenerator(execution_log=overall_execution_log,
                                  analysis_engine_instance=analysis_engine)
 
-    print("\n--- 生成市場分析報告 ---")
-    # 生成並打印總結報告
-    report_gen.generate_full_report(
+    print("\n--- 生成市場分析報告 ---") # 中文化
+
+    # 生成報告並接收返回的報告文本
+    final_report_str = report_gen.generate_full_report(
         overall_start_date_str=args.start_date,
         overall_end_date_str=args.end_date,
         report_generation_time=datetime.now(), # 使用當前時間作為報告生成時間
@@ -130,22 +130,31 @@ def main():
         db_table_name=args.table_name
     )
 
-    print("--- 每日市場洞察報告引擎任務執行完畢 ---") # 更新結束訊息
+    # 打印報告到控制台
+    print("\n--- 市場分析報告內容 ---") # 中文化
+    print(final_report_str)
+    # 未來可考慮將 final_report_str 寫入檔案，例如：
+    # report_filename = f"market_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    # with open(report_filename, "w", encoding="utf-8") as f:
+    #     f.write(final_report_str)
+    # print(f"\n報告已儲存至：{report_filename}")
+
+    print("\n--- 每日市場洞察報告引擎任務執行完畢 ---") # 中文化
 
 if __name__ == "__main__":
-    print(f"DEBUG: Current CWD for __main__ in daily_market_analyzer/run.py: {os.getcwd()}")
-    print(f"DEBUG: Current sys.path for __main__ in daily_market_analyzer/run.py: {sys.path}")
+    # print(f"DEBUG: Current CWD for __main__ in daily_market_analyzer/run.py: {os.getcwd()}") # 移除調試信息
+    # print(f"DEBUG: Current sys.path for __main__ in daily_market_analyzer/run.py: {sys.path}") # 移除調試信息
 
-    # 確保導入路徑正確
-    if 'YFinanceClient' not in globals() or 'AnalysisEngine' not in globals(): # 檢查新加入的 AnalysisEngine
-        try:
-            # 更新導入路徑以匹配新的應用名稱
-            from apps.daily_market_analyzer.yfinance_client import YFinanceClient
-            from apps.daily_market_analyzer.db_manager import DBManager
-            from apps.daily_market_analyzer.analysis_engine import AnalysisEngine
-            from apps.daily_market_analyzer.report_generator import ReportGenerator
-            print("DEBUG: Late imports in daily_market_analyzer __main__ successful.")
-        except ModuleNotFoundError as e:
-            print(f"ERROR: Late ModuleNotFoundError in daily_market_analyzer __main__: {e}")
+    # 移除 __main__ 中的延遲導入，因為已在頂部導入
+    # if 'YFinanceClient' not in globals() or 'AnalysisEngine' not in globals(): # 檢查新加入的 AnalysisEngine
+    #     try:
+    #         # 更新導入路徑以匹配新的應用名稱
+    #         from apps.daily_market_analyzer.yfinance_client import YFinanceClient
+    #         from apps.daily_market_analyzer.db_manager import DBManager
+    #         from apps.daily_market_analyzer.analysis_engine import AnalysisEngine
+    #         from apps.daily_market_analyzer.report_generator import ReportGenerator
+    #         # print("DEBUG: Late imports in daily_market_analyzer __main__ successful.") # 移除調試信息
+    #     except ModuleNotFoundError as e:
+    #         print(f"ERROR: Late ModuleNotFoundError in daily_market_analyzer __main__: {e}") # 中文化
 
     main()

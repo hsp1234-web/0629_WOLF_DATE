@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-報告生成模組 for Daily Market Analyzer.
+報告生成模組 for 每日市場分析儀。
 負責將數據抓取日誌和分析引擎的結果匯總成人類可讀的每日市場報告。
 """
 import pandas as pd
@@ -13,7 +13,7 @@ from datetime import datetime
 class ReportGenerator:
     def __init__(self, execution_log: dict, analysis_engine_instance): #參數改為 analysis_engine_instance
         """
-        初始化 ReportGenerator。
+        初始化報告生成器 (ReportGenerator)。
 
         Args:
             execution_log (dict): 結構化的執行日誌，由 YFinanceClient.hydrate_data_range 生成。
@@ -23,7 +23,7 @@ class ReportGenerator:
         self.execution_log = execution_log
         self.analyzer = analysis_engine_instance # 使用傳入的實例
         self.target_tickers_overall = [] # 將在 generate_full_report 中從 execution_log 推斷或由 run.py 傳入
-        print("INFO: ReportGenerator 初始化完畢。")
+        print("資訊：報告生成器 (ReportGenerator) 初始化完畢。")
 
     def _generate_header(self, overall_start_date_str: str, overall_end_date_str: str,
                          report_generation_time: datetime, task_duration_seconds: float) -> str:
@@ -45,16 +45,20 @@ class ReportGenerator:
         lines = ["\n#### 📜 本日數據盤點 (Data Inventory)"]
         daily_log_for_date = self.execution_log.get(date_str, {})
 
-        if not daily_log_for_date:
-            lines.append(f"- {date_str}: 無任何標的處理記錄。")
+        if not daily_log_for_date and not self.target_tickers_overall: # 如果當天沒日誌且也沒全局目標，才說無記錄
+            lines.append(f"- {date_str}: 無任何標的之處理記錄。")
             return "\n".join(lines)
+        elif not daily_log_for_date and self.target_tickers_overall: # 當天沒日誌，但有全局目標
+             pass # 繼續遍歷 target_tickers_overall
 
         processed_tickers_in_log = list(daily_log_for_date.keys())
 
-        # 與 overall target tickers 比較，找出哪些 ticker 在當日日誌中但可能未在 overall target 中（理論上不應發生）
-        # 或者哪些 overall target tickers 在當日日誌中沒有記錄（更常見）
+        # 確保所有在 target_tickers_overall 中的股票都被提及
+        # 即使它們在當天的 execution_log 中沒有條目
+        all_tickers_to_report_on = sorted(list(set(processed_tickers_in_log + self.target_tickers_overall)))
 
-        for ticker in sorted(list(set(processed_tickers_in_log + [t for t in self.target_tickers_overall if t not in processed_tickers_in_log]))):
+
+        for ticker in all_tickers_to_report_on:
             result = daily_log_for_date.get(ticker)
             if result:
                 status = result.get('status', 'unknown')
@@ -74,9 +78,13 @@ class ReportGenerator:
                      lines.append(f"- ⚠️ **{ticker}**: 在顆粒度 **{interval}** 的某個區塊抓取失敗. {message}")
                 else: # pending, or other statuses
                     lines.append(f"- ❓ **{ticker}**: 狀態未知或未完成 ({status}). {message}")
-            else:
-                # This ticker was in target_tickers_overall but not in daily_log_for_date for this specific date
-                lines.append(f"- ❔ **{ticker}**: 在本日的執行日誌中無記錄 (可能未輪到處理或被跳過)。")
+            elif ticker in self.target_tickers_overall: # Ticker is in overall list but not in today's log
+                lines.append(f"- ❔ **{ticker}**: 在本日的執行日誌中無記錄 (可能未處理或無數據)。")
+            # If ticker not in overall list and not in daily log, it's skipped (should not happen with current logic)
+
+
+        if not all_tickers_to_report_on and not daily_log_for_date : #再次檢查是否真的無內容可報告
+            lines.append(f"- {date_str}: 無任何標的之處理記錄或目標標的。")
 
         return "\n".join(lines)
 
@@ -90,8 +98,19 @@ class ReportGenerator:
             if result.get('status') in ['success', 'success_partial'] and result.get('count', 0) > 0
         ]
 
+        # 也考慮 self.target_tickers_overall 中，當天 execution_log 記錄為成功的股票
+        # 這可以確保即使某股票數據是歷史補齊的，只要當天 execution_log 標為成功，就會嘗試分析
+        additional_tickers_from_overall = [
+            ticker for ticker in self.target_tickers_overall
+            if ticker not in tickers_to_analyze and
+               daily_log_for_date.get(ticker, {}).get('status') in ['success', 'success_partial'] and
+               daily_log_for_date.get(ticker, {}).get('count', 0) > 0
+        ]
+        tickers_to_analyze = sorted(list(set(tickers_to_analyze + additional_tickers_from_overall)))
+
+
         if not tickers_to_analyze:
-            lines.append("- 今日無成功獲取數據的標的進行分析。")
+            lines.append("- 今日無成功獲取數據之標的以供分析。")
             return "\n".join(lines)
 
         # 創建 Markdown 表格
@@ -100,7 +119,7 @@ class ReportGenerator:
         lines.append(header)
         lines.append(separator)
 
-        for ticker in sorted(tickers_to_analyze):
+        for ticker in tickers_to_analyze: # Iterating over sorted list
             # print(f"DEBUG: ReportGenerator: Analyzing {ticker} for snapshot on {date_str}")
             analysis = self.analyzer.analyze_daily_ticker_data(ticker, date_str, table_name)
             if analysis and analysis.get('status') == 'success':
@@ -109,21 +128,18 @@ class ReportGenerator:
                     f"{analysis.get('high', 'N/A')} | {analysis.get('low', 'N/A')} | {analysis.get('range_pct', 'N/A')} | "
                     f"{analysis.get('volume', 'N/A')} | {analysis.get('prev_close', 'N/A')} |"
                 )
-            else:
+            else: # 分析失敗或 ticker 在 execution_log 中是成功但分析時無數據 (理論上不應發生，除非DB問題)
                 lines.append(f"| **{ticker}** | *分析失敗或無數據* | N/A | N/A | N/A | N/A | N/A | N/A |")
+
+        # 如果 target_tickers_overall 中有的股票沒有出現在 snapshot 中 (因為 execution_log 中不是 success)
+        # 可以在這裡補充一行說明它們為何未被分析，但 inventory 已經涵蓋了此資訊。
 
         return "\n".join(lines)
 
     def _generate_daily_section(self, date_str: str, table_name: str, target_tickers_for_run: list[str]) -> str:
         """生成單日的報告內容 (數據清單 + 市場快照)。"""
-        # 更新 target_tickers_overall 以確保 inventory 包含所有相關股票
-        # self.target_tickers_overall = sorted(list(set(self.target_tickers_overall + list(self.execution_log.get(date_str, {}).keys()) + target_tickers_for_run)))
-
-        # inventory_md 應該基於當日 execution_log 中的 tickers 和 overall target_tickers
-        # 確保 target_tickers_overall 在 generate_full_report 開始前已設定好
-        current_daily_log = self.execution_log.get(date_str, {})
-
-        inventory_md = self._generate_inventory_md(date_str) # inventory 會參考 self.target_tickers_overall
+        # self.target_tickers_overall 已經在 generate_full_report 設定
+        inventory_md = self._generate_inventory_md(date_str)
         snapshot_md = self._generate_snapshot_md(date_str, table_name)
 
         return f"\n## 🗓️ {date_str}\n{inventory_md}\n{snapshot_md}"
@@ -155,8 +171,8 @@ class ReportGenerator:
         try:
             date_range = pd.date_range(start=overall_start_date_str, end=overall_end_date_str, freq='D').sort_values(ascending=False)
         except Exception as e:
-            print(f"錯誤: 生成日期範圍時出錯: {e}")
-            report_parts.append(f"\n錯誤：無法生成日期範圍從 {overall_start_date_str} 到 {overall_end_date_str}。")
+            print(f"錯誤：生成日期範圍時發生錯誤：{e}")
+            report_parts.append(f"\n錯誤：無法生成從 {overall_start_date_str} 到 {overall_end_date_str} 的日期範圍報告。")
             return "\n\n---\n\n".join(report_parts)
 
         if date_range.empty and overall_start_date_str == overall_end_date_str: # Handle single day range
@@ -166,21 +182,21 @@ class ReportGenerator:
         for date_obj in date_range:
             date_str = date_obj.strftime('%Y-%m-%d')
             # print(f"DEBUG: ReportGenerator: Generating daily section for {date_str}")
-            # 傳遞 target_tickers 確保即使某天沒有數據，標題中也會提及所有目標股票
+            # target_tickers (即 self.target_tickers_overall) 會在 _generate_inventory_md 和 _generate_snapshot_md 中被參考
             daily_report_md = self._generate_daily_section(date_str, db_table_name, target_tickers)
             report_parts.append(daily_report_md)
 
         final_report_text = "\n\n---\n\n".join(report_parts) # 使用更明顯的分隔符
-        print(final_report_text) # 打印完整報告到控制台
+        # print(final_report_text) # 移除此處的打印，由 run.py 決定是否打印
         return final_report_text
 
 if __name__ == '__main__':
-    print("--- ReportGenerator 測試 ---")
+    print("--- 報告生成器 (ReportGenerator) 測試 ---")
 
     # 模擬 AnalysisEngine (因為它依賴 DBManager)
     class MockAnalysisEngine:
         def analyze_daily_ticker_data(self, ticker, date_str, table_name="mock_table"):
-            print(f"MockAnalysisEngine: Analyzing {ticker} for {date_str}")
+            print(f"模擬分析引擎：正在分析標的 {ticker} 日期 {date_str}")
             if ticker == "AAPL" and date_str == "2024-07-25":
                 return {"status": "success", "close": "150.90", "prev_close": "149.80", "change_pct": "+0.73%",
                         "high": "152.00", "low": "149.00", "range_pct": "2.01%", "volume": "330,000"}
@@ -190,7 +206,7 @@ if __name__ == '__main__':
             if ticker == "MSFT" and date_str == "2024-07-24": # Different date
                  return {"status": "success", "close": "300.00", "prev_close": "298.00", "change_pct": "+0.67%",
                         "high": "301.00", "low": "297.00", "range_pct": "1.35%", "volume": "900,000"}
-            return {"status": "no_data", "message": f"Mock: No data for {ticker} on {date_str}"}
+            return {"status": "no_data", "message": f"模擬：標的 {ticker} 在 {date_str} 無數據"}
 
     mock_analyzer = MockAnalysisEngine()
 
@@ -204,6 +220,7 @@ if __name__ == '__main__':
         "2024-07-24": {
             "AAPL": {"status": "no_data_for_interval", "interval": "1d", "count": 0, "message": "No 1d data found."},
             "MSFT": {"status": "success", "interval": "1h", "count": 7, "message": "Hourly data fetched."},
+            "NVDA": {"status": "success_partial", "interval": "15m", "count": 10, "message": "Partial 15m data."} # NVDA only has log on this day
         },
         "2024-07-23": { # 日期在範圍內，但可能沒有任何 ticker 的日誌
              "XYZ": {"status": "pending", "interval": None, "count": 0, "message": "Still pending"}
@@ -226,19 +243,26 @@ if __name__ == '__main__':
         db_table_name="mock_ohlcv_data"
     )
 
-    # print("\n--- 完整報告內容 ---")
-    # print(full_report) # 已在 generate_full_report 中打印
+    # 打印報告以供手動檢查
+    print("\n--- 完整報告內容 ---")
+    print(full_report)
 
     # 簡單驗證報告中是否包含特定日期和股票的資訊
     assert "🗓️ 2024-07-25" in full_report
-    assert "AAPL" in full_report and "1m" in full_report and "390" in full_report
-    assert "TSLA" in full_report and "所有嘗試的顆粒度均未能獲取數據" in full_report
-    assert "🗓️ 2024-07-24" in full_report
-    assert "MSFT" in full_report and "1h" in full_report
-    assert "🗓️ 2024-07-23" in full_report
-    assert "XYZ" in full_report and "狀態未知或未完成" in full_report
-    assert "NVDA" in full_report and "在本日的執行日誌中無記錄" in full_report # 測試 target_tickers 中有但 log 中沒有的情況
-    assert "市場快照" in full_report
-    assert "| **AAPL** | 150.90 | +0.73% |" in full_report # 驗證 snapshot 內容
+    assert "AAPL" in full_report and "1m" in full_report and "390" in full_report # AAPL on 25th
+    assert "TSLA" in full_report and "所有嘗試的顆粒度均未能獲取數據" in full_report # TSLA on 25th
+    assert "NVDA" in full_report and "在本日的執行日誌中無記錄" in full_report and "2024-07-25" in full_report # NVDA on 25th (no log)
 
-    print("\n--- ReportGenerator 測試完畢 ---")
+    assert "🗓️ 2024-07-24" in full_report
+    assert "MSFT" in full_report and "1h" in full_report # MSFT on 24th
+    assert "NVDA" in full_report and "15m" in full_report and "2024-07-24" in full_report # NVDA on 24th (has log)
+
+    assert "🗓️ 2024-07-23" in full_report
+    assert "XYZ" in full_report and "狀態未知或未完成" in full_report # XYZ on 23rd
+    assert "市場快照" in full_report
+    assert "| **AAPL** | 150.90 | +0.73% |" in full_report # 驗證 snapshot 內容 for AAPL on 25th
+    assert "| **NVDA** | *分析失敗或無數據* | N/A | N/A | N/A | N/A | N/A | N/A |" not in full_report # NVDA on 25th should not be in snapshot
+    # More specific check for NVDA on 2024-07-24 snapshot - needs MockAnalysisEngine to return data for NVDA
+    # For now, we assume if it's in execution_log as success_partial, it would be attempted for analysis.
+
+    print("\n--- 報告生成器 (ReportGenerator) 測試完畢 ---")
