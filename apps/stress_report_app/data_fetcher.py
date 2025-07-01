@@ -15,6 +15,7 @@ import numpy as np
 import yfinance as yf
 from fredapi import Fred
 import requests
+import curl_cffi.requests as cffi_requests # 導入 curl_cffi
 import io
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
@@ -368,10 +369,11 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
     processed_files_count = 0
     failed_files_info = []
 
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    })
+    # 使用 curl_cffi 時不需要手動設定 session 和 User-Agent，impersonate 參數會處理
+    # session = requests.Session()
+    # session.headers.update({
+    #     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    # })
 
     if not ny_fed_positions_urls:
         current_logger.warning("NY Fed 持有量數據 URL 列表為空。返回空 Series。")
@@ -384,13 +386,12 @@ def fetch_nyfed_data(config: Dict[str, Any], logger_instance: Optional[logging.L
         current_logger.info(f"處理文件 {i + 1}/{len(ny_fed_positions_urls)} ({file_source_name}): {url_str}")
 
         try:
-            current_logger.debug(f"文件 {file_source_name}: 正在下載...")
-            # requests.get 需要字串 URL
-            response_excel = session.get(url_str, timeout=120) # 確保使用 url_str
-            # response_excel = session.get(url, timeout=120) # 移除重複且錯誤的行
-            response_excel.raise_for_status()
+            current_logger.debug(f"文件 {file_source_name}: 正在使用 curl_cffi 下載...")
+            # 使用 curl_cffi.requests.get 並模擬 Chrome 瀏覽器
+            response_excel = cffi_requests.get(url_str, impersonate="chrome110", timeout=120)
+            response_excel.raise_for_status() # 檢查 HTTP 錯誤狀態
             excel_content = io.BytesIO(response_excel.content)
-            current_logger.info(f"文件 {file_source_name}: 下載成功。")
+            current_logger.info(f"文件 {file_source_name}: 使用 curl_cffi 下載成功。")
 
             # --- 驗證下載內容 ---
             content_type = response_excel.headers.get('Content-Type', '未知')

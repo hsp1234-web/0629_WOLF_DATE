@@ -8,7 +8,7 @@
 
 ### 核心特性：
 
-*   **數據合約 (Data Contracts)**：應用程式內部流動的數據結構通過 `schemas.py` 中定義的 Pydantic 模型進行嚴格的「合約」定義。這確保了數據在各個處理階段都具有可被強制驗證的「形狀」，從而在早期暴露數據不匹配問題。
+*   **數據合約 (Data Contracts)**：應用程式內部流動的數據結構通過 `schemas.py` 中定義的 Pydantic 模型進行嚴格的「合約」定義。這確保了數據在各個處理階段都具有可被強制驗證的「形狀」，從 Daunting在早期暴露數據不匹配問題。
 *   **應用容器 (App Container)**：`app.py` 作為此應用的唯一標準化外部執行入口。它負責解析命令列參數，並以「流水線 (Pipeline)」的方式依序調用各個功能模組。
 *   **獨立驗收 (Test Probe)**：`_test_harness.py` 提供了一個外部驗收工具，能夠模擬真實的執行環境，對應用容器進行端到端的測試。
 
@@ -92,6 +92,7 @@ python -m apps.stress_report_app._test_harness
 *   **FredAPI (`fredapi`)**: 用於與 FRED (Federal Reserve Economic Data) API 交互以獲取經濟數據。
 *   **yfinance (`yfinance`)**: 用於從 Yahoo Finance API 獲取市場數據。
 *   **Openpyxl**: 作為 Pandas 讀取 `.xlsx` 檔案的底層引擎。
+*   **curl_cffi**: 用於模擬瀏覽器行為進行 HTTP 請求，特別是在嘗試解決 NY Fed 數據下載問題時引入。
 
 詳細的依賴列表請參見專案根目錄下的 `requirements.txt` 文件。
 
@@ -104,10 +105,12 @@ python -m apps.stress_report_app._test_harness
 1.  **環境與依賴準備**：
     *   初始執行 `_test_harness.py` 時發現缺少 `pandas` 依賴。通過安裝根目錄 `requirements.txt` 解決。
     *   後續發現解析 NY Fed Excel 檔案時缺少 `openpyxl` 依賴。將其添加到 `requirements.txt` 並安裝後解決。
+    *   為嘗試改進 NY Fed 數據獲取，引入 `curl_cffi` 並加入 `requirements.txt`。
 
 2.  **Pydantic 配置與錯誤處理修正**：
     *   `app.py` 在載入 `project_config.yaml` 時，由於 `AppConfig` Pydantic 模型預設不允許額外欄位 (`extra='forbid'`)，而配置文件中存在 `runner_settings`，導致 `ValidationError`。已修改 `schemas.py` 中的 `AppConfig.Config`，將 `extra` 設置為 `'ignore'` 以兼容。
     *   `app.py` 中處理 `ValidationError` 時，`e.json(ensure_ascii=False)` 語法與當前 Pydantic 版本不兼容，導致 `TypeError`。已修正為 `e.json()`。
+    *   Colab 驗收平台傳遞了未被 `app.py` argparse 定義的 `--debug` 參數，導致 `unrecognized arguments` 錯誤。已在 `app.py` 中添加對 `--debug` 參數的定義以兼容。
 
 3.  **`_test_harness.py` 增強**：
     *   原 `_test_harness.py` 主要測試 `app.py` 的容器化執行（輸出為 `test_run`）。
@@ -122,8 +125,9 @@ python -m apps.stress_report_app._test_harness
     *   **NY Fed Excel 數據獲取問題**：
         *   最初 `fetch_nyfed_data` 中的 `NameError` (變數 `url` 未定義) 已修正。
         *   改進了 Excel 解析邏輯，嘗試基於 URL 關鍵字 ("sbn", "sbp") 指定表頭行號，並擴大了自動檢測表頭的備案邏輯。
-        *   通過在 `fetch_nyfed_data` 中添加日誌打印下載內容的 `Content-Type` 和內容預覽，確認了從 NY Fed URL 下載到的是 HTML 頁面而非 Excel 檔案。這是導致後續 `openpyxl` 或 `zipfile` 相關錯誤（如 "File is not a zip file"）的根本原因。
-        *   **目前狀態**：NY Fed 數據仍然無法成功解析，但程式能夠優雅處理此錯誤（返回空 Series，不崩潰）。解決此問題需要進一步分析 NY Fed 網站的下載機制或採用預下載策略，超出了本次核心模組驗證的範疇。
+        *   通過在 `fetch_nyfed_data` 中添加日誌打印下載內容的 `Content-Type` 和內容預覽，確認了從 NY Fed URL 下載到的是 HTML 頁面而非 Excel 檔案。
+        *   嘗試使用 `curl_cffi.requests` 並模擬 Chrome 瀏覽器 (`impersonate="chrome110"`) 來下載 NY Fed Excel 檔案。儘管 `curl_cffi` 執行了請求，但返回的內容依然是 HTML 頁面，表明 NY Fed 的防護機制較為複雜，簡單的 User-Agent 模擬不足以獲取直接的檔案流。
+        *   **目前狀態**：NY Fed 數據仍然無法通過直接 HTTP(S) 請求成功解析，但程式能夠優雅處理此錯誤（返回空 Series，不崩潰）。
 
 5.  **`calculator.py` 驗證**：
     *   **衍生指標**：在 FRED 數據可用的情況下，`Spread_10Y2Y` 和 `SOFR_Dev` 等指標計算正常。`Pos_Res_Ratio` 因依賴的 NY Fed 持有量數據缺失而無法計算。
@@ -139,9 +143,11 @@ python -m apps.stress_report_app._test_harness
 
 ### 總結與後續建議：
 
-*   `stress_report_app` 的核心數據處理和計算模組 (`data_fetcher.py`, `calculator.py`) 以及應用主流程 (`app.py`) 在本次 SOP4 驗證後，功能更加健全和可靠（除 NY Fed 數據源外）。
+*   `stress_report_app` 的核心數據處理和計算模組 (`data_fetcher.py`, `calculator.py`) 以及應用主流程 (`app.py`) 在本次 SOP4 驗證後，功能更加健全和可靠（除 NY Fed 數據源直接下載問題外）。
 *   `_test_harness.py` 已被大幅增強，可以作為一個有效的工具來獨立驗證核心模組功能和模擬完整的應用執行。
-*   **最主要的遺留問題是 NY Fed Excel 檔案的獲取**。當前 URL 返回 HTML 頁面。建議後續投入資源研究 NY Fed 網站的實際下載機制，或考慮將這些（可能不常變動的）歷史 Excel 檔案預先下載到專案中，修改 `fetch_nyfed_data` 從本地讀取，以提高數據獲取的穩定性和測試的可靠性。
+*   **最主要的遺留問題是 NY Fed Excel 檔案的獲取**。當前 URL 返回 HTML 頁面，即使嘗試使用 `curl_cffi` 模擬瀏覽器也未能直接獲取到 Excel 檔案。建議後續：
+    1.  人工深入分析 NY Fed 網站，嘗試找到穩定的直接下載連結或理解其下載機制（可能涉及 JavaScript 或特定請求標頭/流程）。
+    2.  **務實的替代方案**：考慮將這些歷史性的 NY Fed Excel 檔案預先下載，並存儲在專案的版本控制系統可訪問的路徑下（例如 `data_workspace/input/nyfed_excel/`）。然後修改 `fetch_nyfed_data` 函數，使其優先從本地檔案系統讀取這些預存的檔案。如果本地檔案不存在，再嘗試（可能仍然失敗的）網路下載作為備案。這將極大提高數據獲取的穩定性和測試的可靠性。
 *   確保所有 API 金鑰都通過環境變數管理，程式碼中沒有硬編碼。本次檢查確認了這一點。
 
 ---

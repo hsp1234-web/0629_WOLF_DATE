@@ -1,0 +1,63 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>交易商每日壓力指數監控報告</title>
+    <style>
+        body {{ font-family: 'Arial', 'Noto Sans CJK TC', sans-serif; margin: 20px; line-height: 1.6; }}
+        h1, h2, h3 {{ color: #333; }}
+        .container {{ max-width: 1000px; margin: auto; background: #f9f9f9; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
+        .chart-container {{ margin-bottom: 30px; }}
+        .section {{ margin-bottom: 20px; }}
+        .gemini-analysis {{ background-color: #eef7ff; border-left: 5px solid #2196F3; padding: 15px; margin-top: 15px; }}
+        .error-message {{ color: red; font-style: italic; }}
+        table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
+        th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }}
+        th {{ background-color: #f2f2f2; }}
+    </style>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>交易商每日壓力指數監控報告</h1>
+        <p><strong>報告生成時間：</strong> 2025-07-01 03:12:45</p>
+        <p><strong>分析數據範圍：</strong> 2022-01-03 至 2023-03-31</p>
+
+        <div class="section" id="text-analysis">
+            <h2>一、市場壓力概覽與歷史對比</h2>
+            <p><strong>當前壓力指數 (2023年03月31日)：</strong> 48.27</p>
+            <ul>
+<li>目前壓力水平相對溫和 (低於60)。</li>
+</ul>
+        </div>
+
+
+        <div class="section gemini-analysis" id="gemini-analysis-error">
+            <h2>二、AI 輔助市場綜合解讀與展望</h2>
+            <p class="error-message">未能成功獲取 AI 輔助分析：已請求 AI 潤飾，但缺少 Gemini API 金鑰。</p>
+        </div>
+
+
+        <div class="section" id="charts">
+            <h2>三、詳細圖表分析</h2>
+            {% for chart_name, chart_html in charts_html.items() %}
+            <div class="chart-container" id="chart-{{ loop.index }}">
+                <h3>{{ chart_titles.get(chart_name, chart_name) }}</h3>
+                {{ chart_html | safe }}
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="section" id="scenario-analysis">
+            <h2>四、市場壓力情境分析與一般性考量 (僅供參考)</h2>
+
+        <p><strong>若壓力指數持續上升：</strong>通常伴隨市場波動加劇、避險情緒升溫...</p>
+        <p><strong>若壓力指數持續下降：</strong>通常表示市場風險偏好改善、流動性充裕...</p>
+
+             <p><small><strong>免責聲明：</strong>以上內容基於壓力指數的假設性變動，提供一般性的市場觀察和原則性考量，不構成任何形式的投資建議。市場實際表現受多重複雜因素影響，任何投資決策請務必諮詢合格的專業財務顧問，並進行獨立判斷。</small></p>
+        </div>
+    </div>
+</body>
+</html>
