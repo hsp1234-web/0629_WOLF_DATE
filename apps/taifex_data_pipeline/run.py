@@ -212,7 +212,7 @@ def pipeline_tick_data(df: pd.DataFrame, source: str) -> pd.DataFrame:
         '成交價格':'price',
         '成交數量_買賣別_':'volume_with_side',
         '成交數量_b_or_s_':'volume_with_side',
-        '成交數量_bplus_s_': 'volume', # This will handle "成交數量(B+S)" after _clean_and_prepare_df
+        '成交數量_bpluss_': 'volume', # 修正: (B+S) -> _bpluss_
         '成交數量':'volume'
     }
     df = _clean_and_prepare_df(df, ['trade_date','trade_time','price','volume'], map_)
