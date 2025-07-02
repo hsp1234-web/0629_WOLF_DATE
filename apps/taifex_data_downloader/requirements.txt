@@ -1,4 +1,6 @@
 # 採集官依賴套件
 requests
 tqdm
-aiohttp # 新增非同步 HTTP 請求庫
+aiohttp # 非同步 HTTP 請求庫 (v21.0方案將替換為requests)
+beautifulsoup4 # HTML 解析庫 (v21.0 新增)
+requests # 同步 HTTP 請求庫 (v21.0 新增，配合to_thread)

@@ -645,7 +645,7 @@ def process_single_file_entry(
                 continue
 
             # 5. 直接寫入 DuckDB (整合原 run_duckdb_loading_stage 的邏輯)
-            target_table_name = pipeline_name # pipeline 名稱即為表格名稱
+            target_table_name = pipeline_name_to_use # pipeline 名稱即為表格名稱 (修正：使用 pipeline_name_to_use)
             if target_table_name not in TABLE_DEFINITIONS:
                 logger.warning(f"目標表格 '{target_table_name}' (來自 {item_descriptor}) 未定義，跳過寫入。")
                 continue
@@ -732,7 +732,7 @@ def process_single_file_entry(
             # 但我們知道 final_df_to_insert 的行數是嘗試插入的行數
             rows_attempted_this_df = len(final_df_to_insert)
             total_rows_added_for_entry += rows_attempted_this_df
-            all_successful_pipelines.append(pipeline_name)
+            all_successful_pipelines.append(pipeline_name_to_use) # 修正: 使用 pipeline_name_to_use
             logger.success(f"  ↳ DataFrame ({item_descriptor}) 的 {rows_attempted_this_df} 筆記錄嘗試寫入 '{target_table_name}'。")
             # --- DuckDB 寫入邏輯結束 ---
 
