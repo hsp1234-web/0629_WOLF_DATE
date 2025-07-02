@@ -360,9 +360,21 @@ def process_daily_ohlc_row(row: Dict[str, Any], source_descriptor: str) -> Optio
                 # if col in row and row[col] is None: pass # 已經是 None
                 # elif col not in row: row[col] = None # 欄位不存在則設為 None
 
+        # 為了使唯一索引對包含 NULL 的欄位生效 (DuckDB 中 NULL != NULL for UNIQUE)
+        # 我們將唯一索引中可能為 NULL 的欄位替換為預設值。
+        # daily_ohlc 唯一索引: (trading_date, product_id, expiry_month, strike_price, option_type, trading_session)
+        # 對於期貨，strike_price 和 option_type 可能為 NULL。
+        if row.get('strike_price') is None:
+            row['strike_price'] = 0.0  # 預設 strike_price 為 0.0
+
+        if row.get('option_type') is None:
+            # 如果 option_type 未提供 (例如期貨)，設定一個明確的非 NULL 字串值
+            row['option_type'] = 'NONE'
+
         row['source'] = source_descriptor
 
         # 檢查核心欄位是否存在 (dropna 邏輯)
+        # trading_date, product_id, close 必須存在
         if not all(row.get(key) is not None for key in ['trading_date', 'product_id', 'close']):
             # logger.debug(f"[{source_descriptor}] 行因缺少 trading_date, product_id 或 close 而被跳過: { {k: row.get(k) for k in ['trading_date', 'product_id', 'close']} }")
             return None
@@ -553,10 +565,25 @@ def process_tick_data_row(raw_row_dict: Dict[str, Any], source_descriptor: str) 
             # elif col not in processed_row: processed_row[col] = None
 
 
+    # 為了使唯一索引對包含 NULL 的欄位生效
+    # tick_data 唯一索引: (trade_datetime, product_id, expiry_month, strike_price, option_type, price, volume)
+    # price 和 volume 若為 None 會在後面的 dropna 中被過濾，這裡主要處理 expiry_month, strike_price, option_type
+    if processed_row.get('expiry_month') is None:
+        processed_row['expiry_month'] = 'NONE'
+
+    if processed_row.get('strike_price') is None:
+        processed_row['strike_price'] = 0.0
+
+    # option_type 已經在前面處理過，如果原始值無效或非選擇權，可能為 None
+    # 此處再次確保它有一個非 NULL 的預設值
+    if processed_row.get('option_type') is None:
+        processed_row['option_type'] = 'NONE'
+
     processed_row['source'] = source_descriptor
 
     # 核心欄位檢查 (dropna)
     # 'trade_datetime','product_id','price','volume'
+    # 注意：price 和 volume 也是唯一索引的一部分。如果它們為 None，此處會被 dropna 過濾。
     if not all(processed_row.get(key) is not None for key in ['trade_datetime', 'product_id', 'price', 'volume']):
         # logger.debug(f"[{source_descriptor}] Tick data 行因核心欄位缺失而被跳過: { {k: processed_row.get(k) for k in ['trade_datetime', 'product_id', 'price', 'volume']} }")
         return None
@@ -684,6 +711,12 @@ def process_institutional_investors_row(raw_row_dict: Dict[str, Any], source_des
     else:
         row['instrument_type'] = 'Future'
         row['option_type'] = None # 期貨沒有買賣權類型
+
+    # 為了使唯一索引對包含 NULL 的欄位生效
+    # institutional_investors 唯一索引: (data_date, product_name, investor_type, instrument_type, option_type)
+    # 對於期貨，option_type 可能為 NULL。
+    if row.get('option_type') is None:
+        row['option_type'] = 'NONE' # 設定一個明確的非 NULL 字串值
 
     # 步驟5: 數值欄位轉換 (使用 INST_INV_COL_MAP_FROM_CLEANED_DF)
     # 這裡的鍵是DataFrame清理後的鍵名，值是最終的Arrow表欄位名
@@ -1763,17 +1796,12 @@ async def process_file_content(
         sql_insert = f"INSERT INTO {table_name} (id, {insert_cols_str}) SELECT nextval('seq_{table_name}'), {select_cols_str} FROM {temp_view_name}"
 
         if uq_cols_str: # 如果有唯一索引定義
-            # 確保唯一索引的欄位都在我們要插入的欄位中
-            conflict_target_cols = [c.strip() for c in uq_cols_str.split(',')]
-            if all(c in insert_cols_list for c in conflict_target_cols):
-                 sql_insert += f" ON CONFLICT ({uq_cols_str}) DO NOTHING"
-            else:
-                logger.warning(f"[{descriptor}] 唯一索引欄位 ({uq_cols_str}) 並不完全存在於插入欄位 ({insert_cols_str}) 中，將不使用 ON CONFLICT 子句。")
-                # 也可以選擇在此情況下報錯或採取其他策略
-        else: # 如果沒有唯一索引，但 id 是主鍵，可以基於 id 做衝突處理（雖然此處 id 是新生成的）
-            # 實際上，由於 id 是新生成的，基於 id 的衝突不太可能發生，除非序列被重置或手動插入了 id
-            # 為了安全，可以加上 ON CONFLICT (id) DO NOTHING，但意義不大
-            pass # sql_insert += " ON CONFLICT (id) DO NOTHING;" # 通常 id 是 PK
+            # 只要 UNIQUE_INDICES 中有定義，就添加 ON CONFLICT 子句
+            # 這符合任務要求，即根除相關警告並始終嘗試智能寫入
+            sql_insert += f" ON CONFLICT ({uq_cols_str}) DO NOTHING"
+        else: # 如果沒有唯一索引定義（例如對於沒有在 UNIQUE_INDICES 中列出的表）
+            # 則不添加 ON CONFLICT 子句。對於 id 主鍵的衝突，由於 id 是新生成的，通常不會發生。
+            pass
 
         db_conn.execute(sql_insert)
         # num_inserted = db_conn.execute(f"SELECT count(*) FROM read_parquet('/dev/null') WHERE '{temp_view_name}' = '{temp_view_name}'").fetchone()[0] # REMOVED HACK

@@ -173,95 +173,102 @@ BADDATE,MXF,202408,,,084504,1750.0,1
             print(f"精煉廠 stderr (v19.1 Async Stream):\n{pipeline_process.stderr}")
 
         self.assertEqual(pipeline_process.returncode, 0,
-                         f"精煉廠 run.py (v19.1 Async Stream) 應成功執行。Stderr: {pipeline_process.stderr}")
+                         f"精煉廠 run.py (第一次執行) 應成功執行。Stderr: {pipeline_process.stderr}")
 
-        self.assertTrue(os.path.exists(format_map_path), f"格式地圖 {format_map_path} 未建立。")
+        self.assertTrue(os.path.exists(format_map_path), f"格式地圖 {format_map_path} (第一次執行後) 未建立。")
         with open(format_map_path, 'r', encoding='utf-8') as f_map:
             format_map_content = json.load(f_map)
-        self.assertTrue(len(format_map_content) > 0, "格式地圖不應為空。")
+        self.assertTrue(len(format_map_content) > 0, "格式地圖 (第一次執行後) 不應為空。")
 
-        self.assertTrue(os.path.exists(db_full_path), f"DuckDB 資料庫 {db_full_path} 未建立。")
+        self.assertTrue(os.path.exists(db_full_path), f"DuckDB 資料庫 {db_full_path} (第一次執行後) 未建立。")
 
-        con = duckdb.connect(database=db_full_path, read_only=True)
+        # --- 第一次執行後的資料庫驗證 ---
+        con1 = duckdb.connect(database=db_full_path, read_only=True)
 
-        # 驗證 daily_ohlc (來自 zip)
-        res_ohlc_count = con.execute("SELECT COUNT(*) FROM daily_ohlc;").fetchone()
-        self.assertIsNotNone(res_ohlc_count)
-        self.assertEqual(res_ohlc_count[0], 5, f"daily_ohlc 表記錄數應為5, 實際 {res_ohlc_count[0]}")
+        # 獲取並儲存第一次執行後的行數
+        # 假設 sample_pipeline_data.zip 包含 daily_ohlc, institutional_investors, pcr, fx_rates
+        # tick_data 來自 tick_data_sample.csv
+        tables_to_check = ['daily_ohlc', 'institutional_investors', 'tick_data', 'pcr', 'fx_rates']
+        initial_row_counts = {}
 
-        res_v1_sample = con.execute("SELECT close FROM daily_ohlc WHERE product_id='TXO' AND expiry_month='202201W1' AND strike_price=18000 AND option_type='C' AND trading_date='2022-01-04';").fetchone()
+        for table_name in tables_to_check:
+            try:
+                count_res = con1.execute(f"SELECT COUNT(*) FROM {table_name};").fetchone()
+                initial_row_counts[table_name] = count_res[0] if count_res else 0
+            except duckdb.CatalogException: # 表可能不存在 (如果樣本數據中沒有該類型的檔案)
+                initial_row_counts[table_name] = 0
+            self.logger.info(f"第一次執行後，表格 {table_name} 行數: {initial_row_counts[table_name]}")
+
+        # 驗證 daily_ohlc (來自 zip) - 第一次執行
+        self.assertEqual(initial_row_counts.get('daily_ohlc', 0), 5, f"daily_ohlc 表初次記錄數應為5, 實際 {initial_row_counts.get('daily_ohlc', 0)}")
+        res_v1_sample = con1.execute("SELECT close FROM daily_ohlc WHERE product_id='TXO' AND expiry_month='202201W1' AND strike_price=18000 AND option_type='C' AND trading_date='2022-01-04';").fetchone()
         self.assertIsNotNone(res_v1_sample)
         self.assertEqual(res_v1_sample[0], 190.0)
 
-        # 驗證 institutional_investors (來自 zip)
-        res_inst_count = con.execute("SELECT COUNT(*) FROM institutional_investors;").fetchone()
-        self.assertIsNotNone(res_inst_count)
-        self.assertEqual(res_inst_count[0], 2, f"institutional_investors 記錄數應為2, 實際 {res_inst_count[0]}")
+        # 驗證 institutional_investors (來自 zip) - 第一次執行
+        self.assertEqual(initial_row_counts.get('institutional_investors', 0), 2, f"institutional_investors 初次記錄數應為2, 實際 {initial_row_counts.get('institutional_investors', 0)}")
 
-        # 驗證 tick_data (來自 tick_data_sample.csv)
-        # 預期：20240726 TXO (2行), 20240726 MXF (1行), 20240727 TXO (1行) = 4行
-        # BADDATE 行會被 process_tick_data_row 中的日期轉換失敗而返回 None
-        # INVALID_VOL 行會被 process_tick_data_row 中的數值轉換失敗而返回 None (如果 volume 是核心 dropna 欄位)
-        # "數據遺失" price 行會導致 price 為 None，進而被 dropna 移除
-        # "---" volume 行會導致 volume 為 None，進而被 dropna 移除
-        # 所以，tick_data_sample.csv 中：
-        # 1. 20240726,TXO,...120.5,2 (有效)
-        # 2. 20240726,TXO,...121.0,3 (有效)
-        # 3. 20240726,MXF,...1750.5,10 (有效)
-        # 4. BADDATE,... (無效, trade_datetime is None) -> process_tick_data_row returns None
-        # 5. ...,INVALID_VOL (無效, volume is None) -> process_tick_data_row returns None
-        # 6. 20240727,TXO,...50.0,5 (有效)
-        # 7. ...,數據遺失,... (無效, price is None) -> process_tick_data_row returns None
-        # 8. ...,---,... (無效, volume is None) -> process_tick_data_row returns None
-        # 總共 4 行有效數據
-        res_tick_count = con.execute("SELECT COUNT(*) FROM tick_data;").fetchone()
-        self.assertIsNotNone(res_tick_count)
-        self.assertEqual(res_tick_count[0], 4, f"tick_data 表記錄數應為4, 實際 {res_tick_count[0]}")
-
-        # 抽樣驗證 tick_data 的一筆記錄
-        # 例如，驗證 20240726,TXO,202408W1,18000,買權,084501,120.5,2
-        # trade_datetime 會是 '2024-07-26 08:45:01.000000'
-        # product_id='TXO', expiry_month='202408W1', strike_price=18000, option_type='C', price=120.5, volume=2
-        # 逐步調試查詢條件，先移除時間條件
-        # query_datetime_condition = "strftime(trade_datetime, '%Y-%m-%d %H:%M:%S.%f') = '2024-07-26 08:45:01.000000'"
-        # sql_query = f"SELECT price, volume, trade_datetime FROM tick_data WHERE product_id='TXO' AND strike_price=18000 AND option_type='C' AND {query_datetime_condition};"
-
-        # 測試1: 只用 product_id
-        sql_query_pid = "SELECT product_id, strike_price, option_type, trade_datetime FROM tick_data WHERE product_id='TXO'"
-        self.logger.debug(f"執行 tick_data product_id 查詢: {sql_query_pid}")
-        res_pid = con.execute(sql_query_pid).fetchall()
-        self.logger.debug(f"product_id='TXO' 查詢結果: {res_pid}")
-        self.assertTrue(len(res_pid) >= 2, f"至少應有2條 product_id='TXO' 的記錄, 實際: {len(res_pid)}。查詢: {sql_query_pid}")
-
-        # 測試2: product_id 和 strike_price
-        sql_query_sp = "SELECT product_id, strike_price, option_type, trade_datetime FROM tick_data WHERE product_id='TXO' AND strike_price=18000"
-        self.logger.debug(f"執行 tick_data strike_price 查詢: {sql_query_sp}")
-        res_sp = con.execute(sql_query_sp).fetchall()
-        self.logger.debug(f"strike_price=18000 查詢結果: {res_sp}")
-        self.assertTrue(len(res_sp) >= 2, f"至少應有2條 TXO@18000 的記錄, 實際: {len(res_sp)}。查詢: {sql_query_sp}")
-
-        # 測試3: product_id, strike_price, option_type
-        sql_query_opt = "SELECT product_id, strike_price, option_type, trade_datetime FROM tick_data WHERE product_id='TXO' AND strike_price=18000 AND option_type='C'"
-        self.logger.debug(f"執行 tick_data option_type 查詢: {sql_query_opt}")
-        res_opt = con.execute(sql_query_opt).fetchall()
-        self.logger.debug(f"option_type='C' 查詢結果: {res_opt}")
-        self.assertTrue(len(res_opt) >= 2, f"至少應有2條 TXO@18000C 的記錄, 實際: {len(res_opt)}。查詢: {sql_query_opt}")
-
-        if res_opt:
-            self.logger.info(f"找到的 TXO@18000C 記錄的 trade_datetime 值: {[r[3] for r in res_opt]}")
-
-        # 最終查詢，包含時間
+        # 驗證 tick_data (來自 tick_data_sample.csv) - 第一次執行
+        self.assertEqual(initial_row_counts.get('tick_data', 0), 4, f"tick_data 表初次記錄數應為4, 實際 {initial_row_counts.get('tick_data', 0)}")
         query_datetime_condition = "strftime(trade_datetime, '%Y-%m-%d %H:%M:%S.%f') = '2024-07-26 08:45:01.000000'"
         sql_query_final = f"SELECT price, volume FROM tick_data WHERE product_id='TXO' AND strike_price=18000 AND option_type='C' AND {query_datetime_condition};"
-        self.logger.debug(f"執行 tick_data 樣本查詢 (含完整時間條件): {sql_query_final}")
-        res_tick_sample_final = con.execute(sql_query_final).fetchone()
-
-        self.assertIsNotNone(res_tick_sample_final, f"未能查詢到指定的 tick_data 樣本記錄。查詢: {sql_query_final}")
+        res_tick_sample_final = con1.execute(sql_query_final).fetchone()
+        self.assertIsNotNone(res_tick_sample_final, f"未能查詢到指定的 tick_data 樣本記錄 (第一次執行)。查詢: {sql_query_final}")
         if res_tick_sample_final:
-            self.assertEqual(res_tick_sample_final[0], 120.5, "tick_data 樣本價格不符。")
-            self.assertEqual(res_tick_sample_final[1], 2, "tick_data 樣本成交量不符。") # 修正此處的變數名
+            self.assertEqual(res_tick_sample_final[0], 120.5, "tick_data 樣本價格不符 (第一次執行)。")
+            self.assertEqual(res_tick_sample_final[1], 2, "tick_data 樣本成交量不符 (第一次執行)。")
 
-        con.close()
+        # 假設 pcr 和 fx_rates 檔案在 sample_pipeline_data.zip 中存在且各有一行有效數據
+        # 實際應根據 zip 內容調整預期值
+        # 根據 sample_pipeline_data.zip 的內容，它似乎不直接包含 pcr.csv 或 fx_rates.csv。
+        # 它包含 futures_daily_sample.csv, institutional_investors_sample.csv, options_daily_v1_sample.csv, options_daily_v2_sample.csv
+        # options_daily_* 會進入 daily_ohlc 表。
+        # futures_daily_sample.csv 也會進入 daily_ohlc 表。
+        # 所以 pcr 和 fx_rates 的期望行數應該是 0，除非測試樣本有變動。
+        self.assertEqual(initial_row_counts.get('pcr', 0), 0, f"pcr 表初次記錄數應為0 (除非樣本更新), 實際 {initial_row_counts.get('pcr', 0)}")
+        self.assertEqual(initial_row_counts.get('fx_rates', 0), 0, f"fx_rates 表初次記錄數應為0 (除非樣本更新), 實際 {initial_row_counts.get('fx_rates', 0)}")
+
+        con1.close()
+
+        # --- 第二次執行管線 ---
+        self.logger.info("="*20 + " 開始第二次執行管線 " + "="*20)
+        pipeline_process_run2 = subprocess.run(pipeline_command, capture_output=True, text=True, encoding='utf-8')
+
+        print(f"精煉廠 stdout (第二次執行):\n{pipeline_process_run2.stdout}")
+        if pipeline_process_run2.stderr:
+            print(f"精煉廠 stderr (第二次執行):\n{pipeline_process_run2.stderr}")
+
+        self.assertEqual(pipeline_process_run2.returncode, 0,
+                         f"精煉廠 run.py (第二次執行) 應成功執行。Stderr: {pipeline_process_run2.stderr}")
+
+        # 驗證第二次執行過程中沒有 ON CONFLICT 相關的錯誤或警告日誌
+        # 由於我們移除了應用程式級別的 "唯一索引欄位...不完全存在於插入欄位..." 警告，
+        # 主要關注的是 DuckDB 是否有其他錯誤。DO NOTHING 應該是靜默的。
+        log_output_run2 = pipeline_process_run2.stdout + pipeline_process_run2.stderr
+        self.assertNotIn("ON CONFLICT", log_output_run2.upper(), # 檢查大寫以捕獲不同的大小寫形式
+                         "第二次執行時，日誌中不應出現 ON CONFLICT 相關的錯誤或非預期警告。")
+        self.assertNotIn("WARNING", log_output_run2, # 檢查是否有其他意外的 WARNING
+                         f"第二次執行時，日誌中不應出現非預期的 WARNING。Stdout: {pipeline_process_run2.stdout} Stderr: {pipeline_process_run2.stderr}")
+        self.assertNotIn("ERROR", log_output_run2, # 檢查是否有其他意外的 ERROR
+                         f"第二次執行時，日誌中不應出現非預期的 ERROR。Stdout: {pipeline_process_run2.stdout} Stderr: {pipeline_process_run2.stderr}")
+
+
+        # --- 第二次執行後的資料庫驗證 ---
+        con2 = duckdb.connect(database=db_full_path, read_only=True)
+        secondary_row_counts = {}
+        for table_name in tables_to_check:
+            try:
+                count_res = con2.execute(f"SELECT COUNT(*) FROM {table_name};").fetchone()
+                secondary_row_counts[table_name] = count_res[0] if count_res else 0
+            except duckdb.CatalogException:
+                secondary_row_counts[table_name] = 0
+            self.logger.info(f"第二次執行後，表格 {table_name} 行數: {secondary_row_counts[table_name]}")
+
+            # 斷言行數沒有增加
+            self.assertEqual(secondary_row_counts[table_name], initial_row_counts[table_name],
+                             f"表格 {table_name} 在第二次執行後行數不應改變。初始: {initial_row_counts[table_name]}, 第二次: {secondary_row_counts[table_name]}")
+
+        con2.close()
 
     # test_process_file_with_scl_trigger_sample 已被移除的功能所替代
 
