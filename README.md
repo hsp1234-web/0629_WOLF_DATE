@@ -1,191 +1,143 @@
-# Financial Forensics Engine (金融市場洞察引擎)
+# TAIFEX 數據供應鏈專案
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hsp1234-web/0629_WOLF_DATE/blob/feature/jules-sop4-verification-%E7%B9%81%E9%AB%94%E4%B8%AD%E6%96%87/colab_notebook.ipynb)
+本專案旨在建立一套高效、穩健的臺灣期貨交易所 (TAIFEX) 數據供應鏈，用於「全景市場分析儀」。它由一系列微應用程式組成，負責數據的偵察、採集、精煉與儲存。
 
-本專案是一個事件驅動的數據處理與分析引擎，旨在從多源數據（如社交媒體討論、金融市場行情）中提取洞察，並利用大型語言模型 (LLM) 生成分析報告，輔助金融市場決策。
+## 專案結構
 
-## 核心功能
+主要應用程式位於 `apps/` 目錄下：
 
-*   **多源數據汲取**: 自動從 CSV 等格式導入社交媒體貼文和金融市場數據 (如台指期行情)。
-*   **分層數據處理**: 採用 Input -> Bronze -> Silver -> Gold 的數據分層架構，對數據進行逐步清洗、轉換、聚合與增強。
-*   **情境感知分析包生成**: 針對特定分析目標（例如某個交易週），整合結構化的市場數據與非結構化的社交輿情數據，並進行初步的 NLP 分析（情感、關鍵詞），形成綜合分析包。
-*   **AI 驅動的報告生成**: 利用 Gemini 等大型語言模型，對生成的分析包進行深度分析，自動撰寫包含宏觀背景、微觀複盤及策略洞察的金融分析報告。
-*   **事件驅動架構**: 基於檔案系統的事件總線，實現各數據處理模組（微應用）的解耦和彈性調度。
-*   **可配置化與可擴展性**: 通過外部設定檔管理數據庫表結構、數據格式映射等；微應用架構易於擴展新的數據源或分析模組。
+*   `apps/taifex_data_prospector`：數據偵察兵，用於快速探勘檔案格式與健康狀況。
+*   `apps/taifex_data_downloader`：數據採集官，負責從期交所網站批量下載數據。
+*   `apps/taifex_data_pipeline`：數據精煉廠，執行 ETL 作業並將數據載入 DuckDB 資料庫。
 
-## 專案結構總覽
+每個應用程式都包含：
+*   `run.py`：主要的執行入口。
+*   `_test_run.py`：單元/整合測試腳本。
+*   `requirements.txt`：該應用所需的 Python 依賴套件。
 
-Financial_Forensics_Engine/
-  runner.py                     # 主執行器，事件驅動任務調度核心
-  requirements.txt              # Python 依賴包列表
-  taifex_format_catalog.json    # 台指期數據格式轉換設定檔
-  database_schemas.json         # 資料庫表結構定義檔
+## 版本歷史與主要功能 (截至 v7.1 / v18.0 階段二)
 
-  apps/                         # 微應用程式目錄
-    00_ingest_social_posts/   # 汲取社交媒體貼文
-      run.py
-    01_ingest_taifex/         # 汲取台指期數據
-      run.py
-    02_transform_taifex/      # 轉換台指期數據 (Bronze -> Silver)
-      run.py
-    03_aggregate_to_gold/     # 聚合台指期數據 (Silver -> Gold)
-      run.py
-    10_create_weekly_context/ # 生成目標週分析包
-      run.py
-    11_analyze_weekly_context/  # AI 分析每週情境，生成報告
-      run.py
-    20_generate_synthesis_report/ # AI 生成跨週期綜合報告
-      run.py
+本節記錄了專案自初始整合以來的主要開發迭代和功能演進。版本號對應內部開發里程碑。
 
-  config/                       # (建議新增) 存放專案設定檔
-    project_config.yaml       # (建議新增) 專案級設定，如 API 金鑰名稱映射
+### **初始整合 (對應 v14.0 BE Master Spec)**
 
-  utils/                        # (建議新增) 通用工具模組
-    config_loader.py          # (建議新增) 統一的設定加載器
+*   **目標**：建立由三個獨立微應用程式組成的 TAIFEX 數據供應鏈基礎架構。
+*   **核心交付**：
+    *   **`taifex_data_prospector` (偵察兵) v1.0**：
+        *   實現對單一檔案的快速格式探勘與健康檢查。
+        *   能夠接收 `--file-path` 參數。
+        *   輸出 JSON 格式的結構化報告，包含檔案元數據（路徑、大小、修改時間）、偵測編碼（支援 UTF-8, MS950 等）以及內容預覽（前五行）。
+        *   新增對 ZIP 檔案的處理，能夠列出 ZIP 內的成員作為預覽。
+        *   包含 `_test_run.py`，驗證對文字檔、空檔案、不存在檔案及 ZIP 檔案的探勘。
+    *   **`taifex_data_downloader` (採集官) v1.0 (同步)**：
+        *   基於 `臺灣期交所(TAIFEX)數據中心 - v3.0` Colab 腳本改編。
+        *   實現參數化入口，可接收日期範圍、輸出路徑及多種數據類型開關。
+        *   下載的檔案儲存到指定輸出路徑下的分類子目錄。
+        *   `_test_run.py` 設計為嘗試下載少量真實數據，並調用「偵察兵」進行初步驗證。加入了對沙箱環境網路限制的考量，在無法穩定下載時能適當跳過部分驗證。
+    *   **`taifex_data_pipeline` (精煉廠) v1.0 (批次)**：
+        *   基於 `高適應性期交所數據整合管道 v8.0` Colab 腳本改編。
+        *   實現參數化入口，接收輸入目錄和資料庫輸出目錄。
+        *   執行 ETL 作業：掃描輸入目錄中的檔案（含解壓縮 ZIP），動態判斷檔案格式與解析配方，執行數據清洗與轉換，最終將高品質結構化數據載入 DuckDB 資料庫。
+        *   支持多種 CSV 格式（包括有表頭、無表頭、不同分隔符的舊格式）。
+        *   `format_map.json` 用於記錄和複用檔案內容雜湊與解析配方的對應關係。
+        *   `_test_run.py` 包含使用範例數據壓縮檔進行端到端 ETL 流程驗證，檢查最終資料庫中的記錄數和抽樣數據。
+    *   **SOP 合規性**：
+        *   所有應用均實現「原子化腳本執行」，可由單一 `python` 指令完成操作。
+        *   每個應用均提供 `run.py` 作為標準執行入口。
+        *   所有 `run.py` 與 `_test_run.py` 均內建「路徑自我校正」樣板碼。
 
-  data/                         # 數據存儲目錄 (分層)
-    input/                    # 原始輸入數據
-      social_posts/social_posts.csv
-      taifex/unzipped/taifex_data.csv
-    bronze/                   # 初步轉換後的數據 (Parquet)
-      social_posts/threads_posts.parquet
-      taifex/taifex_data.parquet
-    silver/                   # 清洗和結構化後的數據
-      analysis_packages/    # App 10 生成的 JSON 分析包
-        2022-W30_AnalysisPackage.json (示例)
-    gold/                     # 高度聚合和分析後的數據
-      analysis_reports/     # App 11 生成的 AI 分析報告
-        2022-W30_AnalysisReport.txt (示例)
-    reports/                  # App 20 生成的綜合報告
-    financial_data.duckdb     # DuckDB 資料庫檔案
+### **Hotfix (對應 v14.2-BE-Task-Fix-01)**
 
-  event_bus/                    # 事件/任務檔案傳遞目錄
-    queue/                    # 新任務佇列
-    in_progress/              # 處理中任務
-    completed/                # 已完成任務
-    failed/                   # 失敗任務
+*   **目標**：修正 `taifex_data_pipeline` 在處理真實期貨成交紀錄 (`Daily_*.zip`) 時的解析錯誤。
+*   **核心修正**：
+    *   **`taifex_data_pipeline/run.py`**：
+        *   更新 `pipeline_tick_data` 函式中的欄位對應邏輯 (`rename_map`)，確保能正確處理真實數據中成交量欄位名稱為 `成交數量(B+S)` 的情況，將其對應到內部 `volume` 欄位。
+        *   移除了 `SimpleLogger` 中不被支援的 `exc_info=True` 參數（在 `logger.error()` 調用處），確保日誌記錄的穩定性。
 
-  logs/                         # 日誌檔案目錄
-    runner_YYYYMMDD_HHMMSS.log
-    app_XX_script_name.log    # 各微應用的日誌
+### **架構演進：管線化混合並行 (v18.0)**
 
-## 主要功能模組說明
+#### **階段一：重構 I/O 層 - `apps/taifex_data_downloader` 升級為非同步下載器**
 
-### `runner.py` (主執行器)
-*   功能：作為整個系統的中央調度器，採用事件驅動模式。
-*   監控 `event_bus/queue/` 目錄中的新任務（以 `.json` 檔案形式定義）。
-*   根據任務定義中的 `app_name`，動態調用對應的 `apps/` 子目錄下的 `run.py` 腳本。
-*   管理任務生命週期：將任務檔案在 `queue`, `in_progress`, `completed`, `failed` 目錄間移動。
-*   記錄詳細的執行日誌。
+*   **目標**：將下載器升級為非同步應用，以提高 I/O 效率。
+*   **核心變更 (`apps/taifex_data_downloader/run.py`)**：
+    *   **引入 `asyncio` 和 `aiohttp`**：核心下載邏輯重構為非同步。
+    *   實現 `download_single_file_async` 和 `download_data_async` 函式。
+    *   **本地優先寫入**：下載的檔案數據流直接寫入 Colab 本地的暫存目錄 (由 `--output-path` 指定)。
+    *   保持 `Content-Type` 檢查以避免下載無效的 HTML 錯誤頁面。
+    *   `main()` 函式調整為可獨立執行非同步下載流程。
+    *   `download_data_async` 設計為可選接收一個任務佇列 (`task_queue`)，成功下載的檔案本地路徑可被放入此佇列，為階段三的協調器做準備。
+    *   **`_test_run.py` 更新**：
+        *   驗證非同步下載的正確性和本地寫入能力。
+        *   能夠解析 `run.py` 的 `stdout` 日誌，以判斷下載狀態，並在外部資源不可靠（如返回 HTML）時正確跳過測試。
 
-### `apps/` (微應用程式)
-每個微應用都是一個獨立的 Python 腳本 (`run.py`)，執行特定的數據處理或分析任務。
+#### **階段二：重構 CPU 層 - `apps/taifex_data_pipeline` 升級為佇列驅動**
 
-*   **`00_ingest_social_posts`**: 讀取 `data/input/social_posts/social_posts.csv`，轉換為 Parquet 並存儲到 `data/bronze/social_posts/`。
-*   **`01_ingest_taifex`**: 讀取 `data/input/taifex/unzipped/` 下的 CSV，轉換為 Parquet 並存儲到 `data/bronze/taifex/`。
-*   **`02_transform_taifex`**: 讀取 Bronze 層期交所數據，參考 `taifex_format_catalog.json` 和 `database_schemas.json`，在 `data/financial_data.duckdb` 中創建/更新 `silver_fact_taifex_quotes` 表。
-*   **`03_aggregate_to_gold`**: 從 DuckDB 的 `silver_fact_taifex_quotes` 讀取日度數據，按週聚合，並寫入 DuckDB 的 `gold_weekly_market_summary` 表。
-*   **`10_create_weekly_context`**:
-    *   接收目標週 `target_week_id`。
-    *   整合市場數據、社交貼文，進行 NLP 分析（情感、關鍵詞）。
-    *   將結果組合成 JSON 分析包，存儲到 `data/silver/analysis_packages/`。
-    *   觸發 `11_analyze_weekly_context` 任務。
-*   **`11_analyze_weekly_context`**:
-    *   讀取分析包 JSON。
-    *   格式化數據為 Prompt，調用 Google Gemini API 進行分析。
-    *   將 AI 生成的分析文本保存到 `data/gold/analysis_reports/`。
-*   **`20_generate_synthesis_report`**: (低優先級) 合併多個週度分析報告，調用 AI 生成跨週期綜合報告，存儲到 `data/reports/`。
+*   **目標**：將數據精煉廠從檔案系統掃描模式升級為從任務佇列接收工作的數據處理引擎。
+*   **核心變更 (`apps/taifex_data_pipeline/run.py`)**：
+    *   **佇列驅動處理**：
+        *   移除了原有的檔案系統掃描 (`discover_files_recursively`) 和批次解析 (`run_parsing_stage`) 邏輯。
+        *   新增 `process_single_file_entry` 函式，負責處理從佇列接收到的單個檔案條目。此函式包含：
+            *   處理 ZIP 檔案（解壓縮並處理內部成員）。
+            *   讀取檔案內容，獲取/更新 `format_map` 中的解析配方。
+            *   解析數據，應用清洗管線。
+            *   將清洗後的 DataFrame **直接寫入**到一個共享的本地 DuckDB 資料庫實例中（包含去重邏輯）。
+        *   新增 `run_pipeline_from_queue` 主執行函式，負責：
+            *   初始化 DuckDB 連接及資料庫結構（表格、序列、索引）。
+            *   從傳入的任務佇列中循環獲取檔案路徑（或包含路徑的字典），直到收到哨兵值。
+            *   調用 `process_single_file_entry` 處理每個檔案。
+            *   在所有任務完成後，儲存 `format_map.json` 並關閉 DuckDB 連接。
+    *   **接口變更**：
+        *   `main()` 函式調整為主要用於獨立測試（模擬佇列填充並調用 `run_pipeline_from_queue`）。
+        *   移除了 `--input-dir` 命令列參數。`--db-output-dir` 用於指定本地 DuckDB 和 `format_map.json` 的輸出目錄。
+    *   **`_test_run.py` 更新**：
+        *   不再使用 `subprocess` 執行 `run.py`。
+        *   直接導入並調用 `run_pipeline_from_queue` 進行測試。
+        *   在測試中模擬 `queue.Queue`，填入範例檔案路徑和哨兵值。
+        *   驗證最終在本地生成的 DuckDB 內容和 `format_map.json` 的正確性。
 
-### 設定檔
-*   `requirements.txt`: Python 依賴庫。
-*   `taifex_format_catalog.json`: 期交所數據 CSV 欄位映射與類型定義。
-*   `database_schemas.json`: DuckDB 表結構定義。
-*   `config/project_config.yaml` (建議): 專案級設定，如 API 金鑰環境變數名稱映射。
+#### **階段三：建立 v18.0 主協調器 (Orchestrator) - 待實現**
+*   此階段將在 Colab 筆記本中實現，負責創建共享任務佇列 (`multiprocessing.Manager().Queue`)，並使用 `ProcessPoolExecutor` 分別啟動和管理「非同步下載器進程池」（I/O 層）和「佇列驅動管線處理進程池」（CPU 層）。
+*   協調器將實現背壓機制、監控、信號與關閉邏輯，並在所有處理完成後將最終的本地 DuckDB 檔案同步回 Google Drive。
 
-### 工具模組
-*   `utils/config_loader.py` (建議): 加載 `project_config.yaml` 並處理 API 金鑰讀取。
+## 如何執行 (v18.0 階段二及以前)
 
-### 數據分層 (`data/`)
-*   **Input**: 原始數據。
-*   **Bronze**: 初步轉換和基本清洗後的數據。
-*   **Silver**: 清洗、結構化，可供分析的數據 (包含分析包)。
-*   **Gold**: 高度聚合、AI 分析後的最終報告或洞察。
+### 單獨執行應用程式
 
-### 事件總線 (`event_bus/`)
-*   基於檔案系統的隊列，用於微應用解耦和任務調度。
-
-### 日誌 (`logs/`)
-*   集中存放所有組件的運行日誌。
-
-## 使用說明 (模擬演習)
-
-1.  **環境準備**：
-    *   確保已安裝 Python 及 `requirements.txt` 中列出的所有依賴包。
-    *   （若使用 AI 功能）確保相關的 API 金鑰已在環境中正確設置 (例如，通過環境變數配置 `GOOGLE_API_KEY` 等，並在 `config/project_config.yaml` 中進行映射)。
-2.  **數據準備**：
-    *   將原始社交貼文數據放入 `data/input/social_posts/social_posts.csv`。
-    *   將原始台指期數據放入 `data/input/taifex/unzipped/taifex_data.csv`。
-3.  **觸發初始任務**：
-    *   根據需求，在 `event_bus/queue/` 目錄下創建任務 JSON 檔案。例如，創建 `task_ingest_social_001.json` 和 `task_ingest_taifex_001.json` 來啟動數據汲取流程。
-    *   任務 JSON 範例:
-        ```json
-        // task_ingest_social_001.json
-        {
-          "app_name": "00_ingest_social_posts",
-          "params": {
-            "input_file": "data/input/social_posts/social_posts.csv",
-            "output_file": "data/bronze/social_posts/threads_posts.parquet"
-          }
-        }
-        ```
-4.  **啟動執行器**：
-    *   在專案根目錄 (`Financial_Forensics_Engine/`) 下運行 `python runner.py`。
-    *   `runner.py` 將會監控任務隊列並依次執行。
-5.  **查看結果**：
-    *   處理過程中的日誌會記錄在 `logs/` 目錄下。
-    *   各階段的數據產出會存放在 `data/` 目錄對應的分層子目錄中。
-    *   最終的 AI 分析報告位於 `data/gold/analysis_reports/`。
-
-## 注意事項 (沙箱環境)
-
-在特定的沙箱環境（如 Google Colab 或類似的雲端 Notebook）中執行時，可能會遇到檔案系統操作限制。如果遇到此類問題，可能需要將部署和執行步驟進一步分解。
-
-## 架構升級：應用程式容器化 (SOP v3.0) 與微服務理念
-
-為了提升專案的穩健性、可維護性和可擴展性，本專案正逐步導入「**應用程式容器化 (App-in-a-Box)**」的開發範式，此範式遵循內部開發與測試流程 **SOP v3.0** 標準。其核心思想是將各個獨立的功能模組（微應用/Micro-App）視為標準化的「貨櫃」，重點關注其**外部接口的標準化**和**內部數據流的可靠性與可驗證性**。
-
-這一轉變旨在將專案從原有的單體式、腳本驅動的結構，逐步演進為一個更接近**微服務理念**的分散式數據處理架構。每個微應用都力求成為一個高內聚、低耦合、可獨立部署和測試的單元。
-
-### `stress_report_app`：首個 SOP v3.0 試點應用
-
-位於 `apps/stress_report_app/` 的「壓力指數報告應用程式」是本專案中第一個按照 SOP v3.0 新範式進行重構的試點微應用。它集中體現了以下核心原則：
-
-*   **數據合約優先**：引入 Pydantic 模型 (`apps/stress_report_app/schemas.py`) 來嚴格定義應用內部各階段的數據輸入與輸出結構，確保數據的「形狀」在流動過程中得到驗證。
-*   **標準化執行入口**：擁有單一的執行入口 `apps/stress_report_app/app.py`，負責解析命令列參數和協調內部處理流水線。
-*   **獨立測試探針**：配備 `apps/stress_report_app/_test_harness.py` 腳本，用於在模擬真實環境下對此微應用容器進行端到端的驗收測試。
-
-透過 `stress_report_app` 的實踐，我們旨在為專案的其他模組提供一個可參考的現代化改造藍圖。
-
-**詳細資訊**：關於 `stress_report_app` 的具體架構、數據流、執行方式及依賴，請參閱其專屬的說明文件：[`apps/stress_report_app/README.md`](./apps/stress_report_app/README.md)。
-
-## 標準化模組測試 (舊版說明保留參考)
-
-為了確保核心模組的穩定性和功能正確性，我們為部分關鍵應用程式提供了標準化的原子化測試腳本。
-
-**（注意：以下針對 `stress_report_app` 的舊版測試說明已過時，新的驗收標準請參考其專屬 README 中的 `_test_harness.py` 執行指南。）**
-
-### 壓力指數報告模組 (apps/stress_report_app) - 舊版測試說明
-
-此模組用於生成一級交易商壓力指數分析報告。其標準化測試腳本位於 `apps/stress_report_app/_test_run.py`。(此腳本現已更新為 `_test_harness.py`)
-
-**執行標準化驗證指令與驗收標準：**
-
-此專案的核心驗收標準之一是確保壓力指數報告模組 (`stress_report_app`) 能夠在其預期環境中成功執行其核心流程。為此，請在**專案根目錄** (`Financial_Forensics_Engine/`) 下執行以下標準化驗證指令：
-
+**1. 數據偵察兵 (`taifex_data_prospector`)**
 ```bash
-# 舊版測試指令，新版請參考 apps/stress_report_app/README.md
-API_KEY_FRED="DUMMY_KEY_FOR_VALIDATION" python apps/stress_report_app/_test_run.py
+python apps/taifex_data_prospector/run.py --file-path /path/to/your/file_or_zip
+```
+
+**2. 數據採集官 (`taifex_data_downloader`)**
+```bash
+python apps/taifex_data_downloader/run.py \
+    --start-date YYYY-MM-DD \
+    --end-date YYYY-MM-DD \
+    --output-path /path/to/local_download_output_temp_dir \
+    --futures-trades \
+    --options-summary
+    # ... (以及其他數據類型開關)
+```
+*注意：此採集官已升級為非同步下載至本地。*
+
+**3. 數據精煉廠 (`taifex_data_pipeline`)**
+*在 v18.0 階段二之後，`run.py` 的主要執行方式是通過 `run_pipeline_from_queue` 函式，由協調器（或測試腳本）調用。獨立的命令列執行主要用於測試。*
+```bash
+# 獨立測試模式 (會處理 --test-file-path 指定的檔案)
+python apps/taifex_data_pipeline/run.py \
+    --db-output-dir /path/to/local_db_and_format_map_dir \
+    --db-name my_taifex_data.duckdb \
+    --processing-temp-dir /path/to/local_processing_temp \
+    --test-file-path /path/to/sample1.zip,/path/to/sample2.csv
+    # (如果 --test-file-path 未提供，則僅初始化並等待空佇列)
+```
+
+### 執行測試
+```bash
+python apps/taifex_data_prospector/_test_run.py
+python apps/taifex_data_downloader/_test_run.py
+python apps/taifex_data_pipeline/_test_run.py
 ```
 
 ---
-本文檔由 AI 輔助生成和分析。
+*此 README 最後更新對應開發里程碑：v18.0 階段二完成。*
