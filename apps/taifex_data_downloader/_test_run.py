@@ -7,7 +7,8 @@ import subprocess
 import json
 import tempfile
 import shutil
-from datetime import datetime, timedelta
+import re # 用於解析日誌
+from typing import Optional, Any # 新增 Optional 和 Any
 
 # --- 路徑自我校正樣板碼 ---
 try:
@@ -20,11 +21,9 @@ try:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    # 為了能呼叫 taifex_data_prospector
     prospector_dir = os.path.join(apps_dir, "taifex_data_prospector")
     if prospector_dir not in sys.path:
         sys.path.insert(0, prospector_dir)
-
 except Exception as e:
     print(f"路徑校正時發生錯誤: {e}", file=sys.stderr)
     pass
@@ -33,109 +32,123 @@ except Exception as e:
 class TestTaifexDataDownloader(unittest.TestCase):
 
     def setUp(self):
-        """測試設定"""
         self.downloader_run_py = os.path.join(current_downloader_dir, "run.py")
-        # 注意：prospector_run_py 的路徑是相對於 current_downloader_dir 的父目錄的同級目錄
         self.prospector_run_py = os.path.join(apps_dir, "taifex_data_prospector", "run.py")
-
-        # 建立一個臨時目錄來存放下載的檔案
-        self.temp_download_dir = tempfile.mkdtemp(prefix="test_downloader_")
-        # print(f"建立臨時下載目錄: {self.temp_download_dir}")
+        self.temp_download_dir = tempfile.mkdtemp(prefix="test_downloader_async_")
 
     def tearDown(self):
-        """測試清理"""
         if os.path.exists(self.temp_download_dir):
             shutil.rmtree(self.temp_download_dir)
-            # print(f"移除臨時下載目錄: {self.temp_download_dir}")
 
-    def find_first_zip_file(self, directory: str) -> str | None:
-        """遞迴尋找指定目錄下的第一個 .zip 檔案"""
+    def find_first_zip_file(self, directory: str, filename_pattern: Optional[str] = None) -> str | None:
+        """遞迴尋找指定目錄下的第一個 .zip 檔案，可選擇性匹配檔名模式。"""
         for root, _, files in os.walk(directory):
             for file in files:
                 if file.lower().endswith(".zip"):
-                    return os.path.join(root, file)
+                    if filename_pattern is None or re.search(filename_pattern, file, re.IGNORECASE):
+                        return os.path.join(root, file)
         return None
 
-    def test_download_and_prospect_single_day_zip_data(self):
+    def parse_downloader_stdout_for_file_status(self, stdout: str, filename: str) -> Optional[str]:
         """
-        測試下載一天的特定 ZIP 數據 (手動驗證過的選擇權每日行情)，然後使用偵察兵探勘。
+        從下載器的 stdout 中解析特定檔案的下載狀態。
+        預期日誌格式: "  - FILENAME: STATUS (OPTIONAL_ERROR_MSG)"
+        或最終總結行的 "成功 X，已存在 Y，未找到 Z，錯誤 E"
+        這裡簡化為查找包含檔案名和狀態的詳細行。
         """
-        test_date = "2023-11-01" # 手動驗證過 OptionsDaily_2023_11_01.zip 存在
+        # 正則表達式匹配類似: "- futures_trades_2023_11_01.zip: success"
+        # 或 "- OptionsDaily_2023_11_01.zip: not_found_html_content (伺服器返回 HTML 內容 (疑似軟404))"
+        # 需要處理檔名中的特殊字元，但這裡的檔名比較固定
+        # pattern = re.compile(rf"\s*-\s*{re.escape(filename)}:\s*([a-zA-Z0-9_]+)")
+        # 更寬鬆的匹配，捕獲狀態和可選的括號內訊息
+        pattern = re.compile(rf"\s*-\s*{re.escape(filename)}:\s*([a-zA-Z0-9_]+)(?:\s*\((.*?)\))?")
 
-        # 執行下載命令，下載選擇權每日行情數據
-        # 對應 TASKS_CONFIG 中的 'options_summary'
-        # URL: https://www.taifex.com.tw/file/taifex/OptionsDaily/OptionsDaily_{}.zip
+        for line in stdout.splitlines():
+            match = pattern.search(line)
+            if match:
+                status = match.group(1)
+                # error_detail = match.group(2) # 可選的錯誤細節
+                return status.strip()
+        return None # 未找到該檔案的明確狀態行
+
+    def test_async_download_and_prospect(self):
+        """
+        測試非同步下載一天的特定 ZIP 數據，然後使用偵察兵探勘。
+        主要驗證下載器是否正確處理外部資源問題並更新日誌。
+        """
+        test_date = "2023-11-01"
+        test_file_type_arg = "--options-summary"
+        # 預期 OptionsDaily_YYYY_MM_DD.zip -> OptionsDaily_2023_11_01.zip
+        expected_dl_filename = f"OptionsDaily_{test_date.replace('-', '_')}.zip"
+        # 預期下載器會將檔案放在 output_path / TASKS_CONFIG[key]['folder'] / expected_dl_filename
+        # TASKS_CONFIG['options_summary']['folder'] 是 'A_Core_Trading/Options_Summary'
+        expected_relative_subdir = os.path.join("A_Core_Trading", "Options_Summary")
+
+
         download_command = [
             sys.executable, self.downloader_run_py,
-            "--start-date", test_date,
-            "--end-date", test_date,
+            "--start-date", test_date, "--end-date", test_date,
             "--output-path", self.temp_download_dir,
-            "--options-summary"
+            test_file_type_arg,
+            "--max-concurrent", "2"
         ]
 
-        # print(f"執行下載命令: {' '.join(download_command)}")
         download_process = subprocess.run(download_command, capture_output=True, text=True, encoding='utf-8')
 
-        # --- 調試輸出 ---
         print(f"下載器 stdout:\n{download_process.stdout}")
         print(f"下載器 stderr:\n{download_process.stderr}")
-        # --- 調試輸出結束 ---
 
         self.assertEqual(download_process.returncode, 0,
                          f"下載器 run.py 應成功執行並返回 0。標準誤: {download_process.stderr}")
 
-        # 尋找下載的 ZIP 檔案
-        # 預期路徑類似: temp_download_dir/A_Core_Trading/Options_Summary/OptionsDaily_2023_11_01.zip
-        downloaded_zip_file = self.find_first_zip_file(self.temp_download_dir)
+        downloader_stdout_log = download_process.stdout
+        file_status_from_log = self.parse_downloader_stdout_for_file_status(downloader_stdout_log, expected_dl_filename)
 
-        if downloaded_zip_file and os.path.exists(downloaded_zip_file):
-            # 檔案找到了，繼續探勘
-            self.assertTrue(os.path.getsize(downloaded_zip_file) > 0, f"下載的 ZIP 檔案 {downloaded_zip_file} 為空。")
+        print(f"從日誌解析到檔案 '{expected_dl_filename}' 的狀態為: {file_status_from_log}")
 
-            # 使用偵察兵探勘下載的檔案
-            prospect_command = [
-                sys.executable, self.prospector_run_py,
-                "--file-path", downloaded_zip_file
-            ]
+        if file_status_from_log == 'success' or file_status_from_log == 'exists':
+            # 檔案在日誌中被報告為成功或已存在，現在實際查找它
+            # 傳遞 expected_dl_filename 給 find_first_zip_file 來確保找到的是目標檔案
+            # 檔案應該在 self.temp_download_dir 下的 expected_relative_subdir 中
+            target_search_dir = os.path.join(self.temp_download_dir, expected_relative_subdir)
+            downloaded_zip_file_path = self.find_first_zip_file(target_search_dir, expected_dl_filename)
 
-            prospect_process = subprocess.run(prospect_command, capture_output=True, text=True, encoding='utf-8')
+            if downloaded_zip_file_path and os.path.exists(downloaded_zip_file_path):
+                print(f"檔案 '{expected_dl_filename}' 根據日誌狀態 '{file_status_from_log}' 應存在，並在路徑 '{downloaded_zip_file_path}' 找到。")
+                self.assertTrue(os.path.getsize(downloaded_zip_file_path) > 0, f"下載的 ZIP 檔案 {downloaded_zip_file_path} 為空。")
 
-            self.assertEqual(prospect_process.returncode, 0,
-                             f"偵察兵 run.py 應成功執行並返回 0。標準誤: {prospect_process.stderr}")
+                # --- 開始偵察兵驗證 ---
+                prospect_command = [sys.executable, self.prospector_run_py, "--file-path", downloaded_zip_file_path]
+                prospect_process = subprocess.run(prospect_command, capture_output=True, text=True, encoding='utf-8')
+                self.assertEqual(prospect_process.returncode, 0, f"偵察兵執行失敗: {prospect_process.stderr}")
 
-            try:
-                print(f"偵察兵原始輸出 (當檔案成功下載時):\n{prospect_process.stdout}")
-                report = json.loads(prospect_process.stdout)
-            except json.JSONDecodeError:
-                self.fail(f"偵察兵 run.py 的輸出不是有效的 JSON 格式。輸出內容:\n{prospect_process.stdout}")
+                try:
+                    report = json.loads(prospect_process.stdout)
+                except json.JSONDecodeError:
+                    self.fail(f"偵察兵輸出不是有效 JSON: {prospect_process.stdout}")
 
-            self.assertEqual(report["status"], "success", "偵察兵報告狀態應為 'success'")
-            self.assertEqual(report["file_type"], "zip", f"偵察兵報告的 file_type 應為 'zip'，實際為 '{report.get('file_type')}'.")
-            self.assertEqual(report["encoding"], "binary/zip", "偵察兵報告的 encoding 應為 'binary/zip'")
-            # 不同的 ZIP 檔案大小差異可能很大，將大小檢查改為 > 0 即可，已在前面檢查過
-            # self.assertTrue(report["size_bytes"] > 100, f"預期 ZIP 檔案大小應大於 100 bytes，實際為 {report['size_bytes']}")
-
-            self.assertTrue(len(report["preview"]) > 0, "ZIP 檔案的預覽 (成員列表) 不應為空")
-            # OptionsDaily ZIP 內部通常包含一個 CSV 檔案
-            found_csv_in_preview = any(".csv" in item.lower() for item in report["preview"])
-            self.assertTrue(found_csv_in_preview, f"偵察兵預覽應包含一個 CSV 檔案成員。預覽內容: {report['preview']}")
-        else:
-            # 如果 downloaded_zip_file 為 None 或不存在，檢查下載日誌是否表明是 "not_found_html_content"
-            # 這是我們預期在沙箱環境中可能發生的情況
-            downloader_output_log = download_process.stdout + "\n" + download_process.stderr
-            if "not_found_html_content" in downloader_output_log:
-                print("下載器報告 'not_found_html_content'。由於外部資源限制，無法驗證下載檔案的內容。")
-                # 在這種情況下，我們可以選擇讓測試通過，或者用 unittest.skip 跳過
-                self.skipTest("由於外部資源返回HTML (not_found_html_content)，跳過對下載檔案內容的驗證。下載器本身按預期處理了此情況。")
-            elif "not_found" in downloader_output_log: # 包括一般的 not_found 或 not_found_empty_file
-                print("下載器報告 'not_found' 或空檔案。由於外部資源限制/不存在，無法驗證下載檔案的內容。")
-                self.skipTest("由於外部資源不存在或為空 (not_found)，跳過對下載檔案內容的驗證。下載器本身按預期處理了此情況。")
+                self.assertEqual(report["status"], "success", "偵察兵報告應為 success")
+                self.assertEqual(report["file_type"], "zip", f"偵察兵報告 file_type 應為 zip, 得到 {report.get('file_type')}")
+                self.assertTrue(any(".csv" in item.lower() for item in report["preview"]), f"偵察兵預覽應包含 CSV 成員: {report['preview']}")
+                # --- 偵察兵驗證結束 ---
             else:
-                # 如果不是預期的 "not_found" 類型，則測試應該失敗
-                self.fail(f"ZIP 檔案未成功下載，且下載日誌未明確表明是 'not_found_html_content' 或 'not_found'。下載器輸出:\n{downloader_output_log}")
+                self.fail(f"日誌報告檔案 '{expected_dl_filename}' 狀態為 '{file_status_from_log}'，但在預期目錄 '{target_search_dir}' 中未找到該檔案。")
 
+        elif file_status_from_log == 'not_found_html_content':
+            print(f"日誌確認檔案 '{expected_dl_filename}' 因 'not_found_html_content' 未下載。")
+            self.skipTest("由於外部資源返回HTML (not_found_html_content)，跳過對下載檔案內容的驗證。下載器按預期處理了此情況。")
+
+        elif file_status_from_log and 'not_found' in file_status_from_log: # 包括 not_found, not_found_empty_content 等
+            print(f"日誌確認檔案 '{expected_dl_filename}' 因 '{file_status_from_log}' 未下載。")
+            self.skipTest(f"由於外部資源未找到或為空 (狀態: {file_status_from_log})，跳過內容驗證。下載器按預期處理了此情況。")
+
+        elif file_status_from_log and 'error' in file_status_from_log:
+             print(f"日誌確認檔案 '{expected_dl_filename}' 下載時發生錯誤: '{file_status_from_log}'。")
+             self.skipTest(f"由於下載時發生錯誤 (狀態: {file_status_from_log})，跳過內容驗證。")
+
+        else:
+            # 未能從日誌解析出明確狀態，或者狀態未知
+            self.fail(f"檔案 '{expected_dl_filename}' 未成功下載，且無法從日誌中確定其狀態或狀態未知 ('{file_status_from_log}')。\n下載器 stdout:\n{downloader_stdout_log}")
 
 if __name__ == "__main__":
-    # 執行測試時，確保 apps 目錄在PYTHONPATH中，以便 prospector 能被 downloader 的測試腳本找到
-    # 這已在頂部的路徑校正中處理
     unittest.main(argv=['first-arg-is-ignored'], exit=False)

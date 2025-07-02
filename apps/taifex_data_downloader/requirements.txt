@@ -1,3 +1,4 @@
 # 採集官依賴套件
 requests
 tqdm
+aiohttp # 新增非同步 HTTP 請求庫

@@ -3,11 +3,16 @@
 import os
 import sys
 import argparse
-import requests
 import time
 from datetime import datetime, timedelta
-from tqdm import tqdm
 import warnings # 用於忽略 openpyxl 的警告，如果原始腳本有
+import asyncio
+import aiohttp
+from typing import List, Dict, Optional, Any
+# from tqdm.asyncio import tqdm as async_tqdm # tqdm 對 asyncio 的支持可能需要這個
+# 或者在 gather 後手動更新 tqdm
+from tqdm import tqdm
+
 
 # --- 路徑自我校正樣板碼 ---
 try:
@@ -27,191 +32,223 @@ except Exception as e:
 # --- 忽略特定警告 (如果需要) ---
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
-# --- 核心下載邏輯 ---
-def download_single_file(url: str, folder_path: str, file_name: str, session: requests.Session) -> str:
+# --- 核心下載邏輯 (非同步版本) ---
+
+async def download_single_file_async(
+    session: aiohttp.ClientSession,
+    url: str,
+    folder_path: str,
+    file_name: str,
+    task_queue: Optional[Any] = None, # multiprocessing.Queue 不能直接在 asyncio 中使用，協調器需處理
+    semaphore: Optional[asyncio.Semaphore] = None
+) -> Dict[str, Any]:
     """
-    下載單一檔案的通用函式。
-    返回狀態: 'success', 'exists', 'not_found', 'error'
+    非同步下載單一檔案。
+    返回狀態字典: {'url': url, 'local_path': local_file_path, 'status': status_str, 'error': error_msg}
     """
+    if semaphore:
+        await semaphore.acquire()
+
     os.makedirs(folder_path, exist_ok=True)
-    file_path = os.path.join(folder_path, file_name)
+    local_file_path = os.path.join(folder_path, file_name)
+    status_str = "unknown_error"
+    error_msg = None
 
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0: # 檢查檔案是否存在且非空
-        return 'exists'
+    if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+        status_str = 'exists'
+    else:
+        try:
+            # print(f"開始下載: {url}")
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as response: # 總超時60秒
+                content_type = response.headers.get('Content-Type', '').lower()
 
-    try:
-        # 使用傳入的 session 對象
-        response = session.get(url, stream=True, timeout=30) # 增加 timeout
-
-        content_type = response.headers.get('Content-Type', '').lower()
-
-        if response.status_code == 200:
-            # 檢查 Content-Type 是否表明這是一個 HTML 頁面 (可能是軟 404)
-            if 'text/html' in content_type:
-                # print(f"警告: URL {url} 返回了 HTML 內容，疑似軟 404 錯誤。將視為 'not_found'。", file=sys.stderr)
-                return 'not_found_html_content'
-
-            # 檢查 Content-Type 是否符合預期的 ZIP 檔案類型
-            # 預期的 ZIP Content-Type 可能是 'application/zip', 'application/x-zip-compressed', 'application/octet-stream'
-            # 如果 Content-Type 明顯不符，也可能需要處理，但這裡先主要處理 text/html
-            # if not any(zip_ct in content_type for zip_ct in ['application/zip', 'application/x-zip-compressed', 'octet-stream']):
-            #     print(f"警告: URL {url} 返回的 Content-Type 為 {content_type}，可能不是預期的 ZIP 檔案。", file=sys.stderr)
-            #     # 根據情況決定是否繼續下載或標記為錯誤/not_found
-
-            with open(file_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-
-            if os.path.getsize(file_path) > 0:
-                return 'success'
-            else:
-                try: os.remove(file_path)
+                if response.status == 200:
+                    if 'text/html' in content_type:
+                        status_str = 'not_found_html_content'
+                        error_msg = "伺服器返回 HTML 內容 (疑似軟404)"
+                    else:
+                        content = await response.read()
+                        if content:
+                            with open(local_file_path, 'wb') as f:
+                                f.write(content)
+                            if os.path.getsize(local_file_path) > 0: # 再次確認
+                                status_str = 'success'
+                            else: # 寫入後檔案為空
+                                status_str = 'error_empty_file_after_write'
+                                error_msg = "檔案寫入後為空"
+                                try: os.remove(local_file_path)
+                                except OSError: pass
+                        else: # response.read() 返回空
+                            status_str = 'not_found_empty_content'
+                            error_msg = "伺服器返回內容為空"
+                elif response.status == 404:
+                    status_str = 'not_found'
+                    error_msg = f"HTTP 404 - 檔案不存在"
+                else:
+                    status_str = f'error_http_{response.status}'
+                    error_msg = f"HTTP 錯誤狀態: {response.status}"
+        except asyncio.TimeoutError:
+            status_str = 'error_timeout'
+            error_msg = "下載超時"
+        except aiohttp.ClientError as e: # 更通用的 aiohttp 客戶端錯誤
+            status_str = 'error_aiohttp_client'
+            error_msg = f"aiohttp 客戶端錯誤: {type(e).__name__} - {str(e)}"
+        except Exception as e:
+            status_str = 'error_exception'
+            error_msg = f"下載過程中發生未預期錯誤: {type(e).__name__} - {str(e)}"
+            if os.path.exists(local_file_path): # 如果出錯但檔案已部分創建，嘗試刪除
+                try: os.remove(local_file_path)
                 except OSError: pass
-                return 'not_found_empty_file' # 下載了空檔案
-        elif response.status_code == 404:
-            return 'not_found'
-        else:
-            return f'error_http_{response.status_code}'
-    except requests.exceptions.Timeout:
-        return 'error_timeout'
-    except requests.exceptions.RequestException as e:
-        return 'error_request'
+
+    result = {'url': url, 'local_path': local_file_path, 'status': status_str, 'error': error_msg, 'file_name': file_name}
+
+    if status_str == 'success' and task_queue is not None:
+        try:
+            # 注意: multiprocessing.Queue 在不同進程的 asyncio 事件循環中直接使用 put_nowait 可能會有問題
+            # 協調器階段需要仔細考慮如何從 asyncio 迴圈安全地放入 multiprocessing.Queue
+            # 一個常見模式是 asyncio 迴圈將結果放入 asyncio.Queue, 然後由一個同步線程/進程從 asyncio.Queue 取出再放入 multiprocessing.Queue
+            # 或者，如果 downloader 和 pipeline 在同一進程但不同線程/協程，可以使用 asyncio.Queue
+            # 此處暫時示意，實際放入佇列的邏輯可能需要在協調器中包裝
+            task_queue.put_nowait({'type': 'file', 'path': local_file_path, 'source_url': url})
+        except Exception as e_queue:
+            # 如果放入佇列失敗，記錄錯誤，但不影響下載本身的狀態
+            result['queue_error'] = f"放入任務佇列失敗: {e_queue}"
+            print(f"錯誤: 無法將 {local_file_path} 放入任務佇列: {e_queue}", file=sys.stderr)
 
 
-def download_data(start_date_dt: datetime, end_date_dt: datetime, output_base_path: str, data_types: dict, sleep_time: float = 0.5):
+    if semaphore:
+        semaphore.release()
+
+    # print(f"完成下載: {url} -> {status_str}")
+    return result
+
+
+async def download_data_async(
+    start_date_dt: datetime,
+    end_date_dt: datetime,
+    local_output_base_path: str,
+    data_types_to_download: dict, # 使用者選擇的數據類型 (布林字典)
+    task_queue: Optional[Any] = None, # 傳給 download_single_file_async
+    max_concurrent_downloads: int = 10, # 並行下載限制
+    sleep_time_between_batches: float = 0.1 # 批次間的短暫延遲
+):
     """
-    主下載程序。
-    data_types 是一個字典，鍵是如 'futures_trades' 的標識，值是布林表示是否下載。
+    主非同步下載程序。
     """
     print("======================================================")
-    print("          🚀 TAIFEX 數據下載引擎啟動中...         ")
+    print("      🚀 TAIFEX 非同步數據下載引擎啟動中...         ")
     print("======================================================\n")
-    print(f"🗂️ 所有下載的檔案將會儲存在以下路徑：\n➡️ {os.path.abspath(output_base_path)}\n")
+    print(f"🗂️ 所有下載的檔案將會儲存在以下本地路徑：\n➡️ {os.path.abspath(local_output_base_path)}\n")
 
     date_range = [start_date_dt + timedelta(days=x) for x in range((end_date_dt - start_date_dt).days + 1)]
 
-    # 任務清單模板
-    # 結構: '內部名稱': {'enabled_key': '對應data_types的鍵', 'folder': '子資料夾名', 'url_template': 'URL模板'}
-    TASKS_CONFIG = {
-        'futures_trades': {
-            'enabled_key': 'futures_trades',
-            'folder': 'A_Core_Trading/Futures_Trades',
-            'url_template': 'https://www.taifex.com.tw/file/taifex/Dailydownload/DailydownloadCSV/Daily_{}.zip'
-        },
-        'futures_summary': {
-            'enabled_key': 'futures_summary',
-            'folder': 'A_Core_Trading/Futures_Summary',
-            'url_template': 'https://www.taifex.com.tw/file/taifex/Daily/Daily_{}.zip'
-        },
-        'options_trades': {
-            'enabled_key': 'options_trades',
-            'folder': 'A_Core_Trading/Options_Trades',
-            'url_template': 'https://www.taifex.com.tw/file/taifex/OptionsDailydownload/OptionsDailydownloadCSV/OptionsDaily_{}.zip'
-        },
-        'options_summary': {
-            'enabled_key': 'options_summary',
-            'folder': 'A_Core_Trading/Options_Summary',
-            'url_template': 'https://www.taifex.com.tw/file/taifex/OptionsDaily/OptionsDaily_{}.zip'
-        },
-        'institutional_investors': {
-            'enabled_key': 'institutional_investors',
-            'folder': 'B_Market_Sentiment/Institutional_Investors',
-            'url_template': 'https://www.taifex.com.tw/file/taifex/CHINESE/3/3_1_1_{}.zip'
-        },
-        'put_call_ratio': {
-            'enabled_key': 'put_call_ratio',
-            'folder': 'B_Market_Sentiment/Put_Call_Ratio',
-            'url_template': 'https://www.taifex.com.tw/file/taifex/PCRatio/PCRatio_{}.zip'
-        },
-        'final_settlement_price': {
-            'enabled_key': 'final_settlement_price',
-            'folder': 'C_Settlement/Final_Settlement_Price',
-            'url_template': 'https://www.taifex.com.tw/file/taifex/CHINESE/5/FSP_{}.zip'
-        },
+    TASKS_CONFIG = { # 與舊版一致
+        'futures_trades': {'folder': 'A_Core_Trading/Futures_Trades', 'url_template': 'https://www.taifex.com.tw/file/taifex/Dailydownload/DailydownloadCSV/Daily_{}.zip'},
+        'futures_summary': {'folder': 'A_Core_Trading/Futures_Summary', 'url_template': 'https://www.taifex.com.tw/file/taifex/Daily/Daily_{}.zip'},
+        'options_trades': {'folder': 'A_Core_Trading/Options_Trades', 'url_template': 'https://www.taifex.com.tw/file/taifex/OptionsDailydownload/OptionsDailydownloadCSV/OptionsDaily_{}.zip'},
+        'options_summary': {'folder': 'A_Core_Trading/Options_Summary', 'url_template': 'https://www.taifex.com.tw/file/taifex/OptionsDaily/OptionsDaily_{}.zip'},
+        'institutional_investors': {'folder': 'B_Market_Sentiment/Institutional_Investors', 'url_template': 'https://www.taifex.com.tw/file/taifex/CHINESE/3/3_1_1_{}.zip'},
+        'put_call_ratio': {'folder': 'B_Market_Sentiment/Put_Call_Ratio', 'url_template': 'https://www.taifex.com.tw/file/taifex/PCRatio/PCRatio_{}.zip'},
+        'final_settlement_price': {'folder': 'C_Settlement/Final_Settlement_Price', 'url_template': 'https://www.taifex.com.tw/file/taifex/CHINESE/5/FSP_{}.zip'},
     }
 
-    active_tasks = {name: params for name, params in TASKS_CONFIG.items() if data_types.get(params['enabled_key'], False)}
-
-    if not active_tasks:
-        print("ℹ️ 沒有選擇任何數據類型進行下載。")
-        return
-
-    total_days = len(date_range)
-    total_tasks_per_day = len(active_tasks)
-    overall_progress_bar = tqdm(total=total_days * total_tasks_per_day, desc="📅 總體進度", unit="檔")
-
-    # 使用 Session 對象以實現連接重用和可能的性能提升
-    with requests.Session() as session:
-        # 設定 User-Agent，模擬瀏覽器請求，有些伺服器可能需要
-        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'})
-
-        for current_date_idx, current_date in enumerate(date_range):
-            date_str_for_url = current_date.strftime('%Y_%m_%d')
-            date_str_for_log = current_date.strftime('%Y-%m-%d')
-
-            # tqdm.write(f"\nProcessing Date: {date_str_for_log}") # 換用 overall_progress_bar 的 set_postfix
-
-            for task_internal_name, params in active_tasks.items():
-                task_display_name = task_internal_name.replace('_', ' ').title()
-                overall_progress_bar.set_postfix_str(f"{date_str_for_log} - {task_display_name}")
-
-                folder_path = os.path.join(output_base_path, params['folder'])
-                url = params['url_template'].format(date_str_for_url)
+    download_tasks_to_create = []
+    for date_val in date_range:
+        date_str_for_url = date_val.strftime('%Y_%m_%d')
+        for task_key, should_download in data_types_to_download.items():
+            if should_download and task_key in TASKS_CONFIG:
+                config = TASKS_CONFIG[task_key]
+                url = config['url_template'].format(date_str_for_url)
                 file_name = os.path.basename(url)
+                folder_path = os.path.join(local_output_base_path, config['folder'])
+                download_tasks_to_create.append({'url': url, 'folder_path': folder_path, 'file_name': file_name})
 
-                status = download_single_file(url, folder_path, file_name, session)
+    if not download_tasks_to_create:
+        print("ℹ️ 沒有有效的下載任務被建立。請檢查日期範圍和選擇的數據類型。")
+        return []
 
-                log_symbol = "❓"
-                if status == 'exists': log_symbol = "☑️ (已存在)"
-                elif status == 'success': log_symbol = "✅ (成功)"
-                elif status == 'not_found': log_symbol = "➖ (無資料)"
-                elif status == 'error_timeout': log_symbol = "❌ (超時)"
-                elif status.startswith('error_http_'): log_symbol = f"❌ (HTTP {status.split('_')[-1]})"
-                elif status == 'error_request': log_symbol = "❌ (請求錯誤)"
-                else: log_symbol = f"❌ ({status})" # 其他錯誤
+    all_results = []
+    semaphore = asyncio.Semaphore(max_concurrent_downloads) # 控制並行數
 
-                log_message = f"  [{date_str_for_log}] {task_display_name:<30} -> {file_name:<30} ... {log_symbol}"
-                tqdm.write(log_message)
-                print(log_message, file=sys.stderr) # 新增行：將日誌也印到 stderr
-                overall_progress_bar.update(1)
+    # 設定 aiohttp ClientSession 的 User-Agent
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        tasks_for_gather = []
+        for task_params in download_tasks_to_create:
+            # 將 task_queue 傳遞給 download_single_file_async
+            coro = download_single_file_async(session, task_params['url'], task_params['folder_path'], task_params['file_name'], task_queue, semaphore)
+            tasks_for_gather.append(coro)
 
-                if status not in ['exists', 'success', 'not_found', 'not_found_html_content', 'not_found_empty_file']: # 對於錯誤情況，可以增加延遲
-                    time.sleep(sleep_time * 2) # 發生錯誤時，延遲時間加倍
-                else:
-                    time.sleep(sleep_time) # 友善伺服器，每次請求後延遲
+        # 使用 tqdm 包裝 asyncio.gather 以顯示進度
+        # all_results = await async_tqdm.gather(*tasks_for_gather, desc="📥 非同步下載進度")
+        # tqdm.asyncio 可能會有問題，改用手動更新或在完成後處理
 
-    overall_progress_bar.close()
+        print(f"總共建立 {len(tasks_for_gather)} 個下載任務，並行上限 {max_concurrent_downloads}。")
+
+        # 分批執行並行任務，以允許小的延遲，避免瞬間請求過多
+        # 這裡可以簡化為直接 gather，因為 semaphore 已經控制了並行數
+        # 如果要分批次，可以這樣：
+        # batch_size = max_concurrent_downloads * 2 # 例如一次 gather 這麼多任務
+        # for i in range(0, len(tasks_for_gather), batch_size):
+        #     batch = tasks_for_gather[i:i+batch_size]
+        #     batch_results = await asyncio.gather(*batch)
+        #     all_results.extend(batch_results)
+        #     if sleep_time_between_batches > 0 and i + batch_size < len(tasks_for_gather):
+        #         await asyncio.sleep(sleep_time_between_batches)
+
+        # 直接 gather 所有任務，由 semaphore 控制實際並行
+        # 並使用 tqdm 手動更新進度條
+        pbar = tqdm(total=len(tasks_for_gather), desc="📥 非同步下載進度", unit="檔")
+        for coro_future in asyncio.as_completed(tasks_for_gather): # as_completed 可以逐個獲取結果
+            result = await coro_future
+            all_results.append(result)
+            pbar.update(1)
+            pbar.set_postfix_str(f"{os.path.basename(result.get('local_path', 'N/A'))} -> {result.get('status', 'N/A')}")
+            # 短暫釋放控制權，讓其他任務可以運行，也模擬微小延遲
+            await asyncio.sleep(0.01)
+        pbar.close()
+
+    # 輸出總結
     print("\n======================================================")
-    print("             🎉 全部下載任務執行完畢！ 🎉             ")
+    print("             🎉 全部非同步下載任務執行完畢！ 🎉             ")
     print("======================================================")
-    print("\n**圖例說明**：")
-    print("✅: 下載成功 | ☑️: 檔案已存在且非空，跳過 | ➖: 當日無資料(可能為假日或尚未提供) | ❌: 發生錯誤 (超時/HTTP錯誤/請求錯誤)")
-    print(f"\n所有檔案皆已儲存至您的指定路徑：\n➡️ **{os.path.abspath(output_base_path)}**")
+
+    success_count = sum(1 for r in all_results if r['status'] == 'success')
+    exists_count = sum(1 for r in all_results if r['status'] == 'exists')
+    not_found_count = sum(1 for r in all_results if r['status'].startswith('not_found'))
+    error_count = sum(1 for r in all_results if r['status'].startswith('error'))
+
+    print(f"總結：成功 {success_count}，已存在 {exists_count}，未找到 {not_found_count}，錯誤 {error_count}")
+
+    for r in all_results:
+        if r['status'] not in ['success', 'exists']:
+            print(f"  - {r['file_name']}: {r['status']} ({r.get('error', '無額外錯誤訊息')})")
+        if 'queue_error' in r:
+             print(f"  - {r['file_name']}: 佇列錯誤 - {r['queue_error']}")
+
+
+    print(f"\n所有檔案嘗試儲存至您的指定本地路徑：\n➡️ **{os.path.abspath(local_output_base_path)}**")
+    return all_results
+
 
 def main():
-    parser = argparse.ArgumentParser(description="TAIFEX 數據採集官：從期交所官方網站批量下載指定日期範圍的原始數據。")
+    parser = argparse.ArgumentParser(description="TAIFEX 非同步數據採集官：從期交所官方網站批量下載指定日期範圍的原始數據至本地。")
 
-    # 日期參數
     parser.add_argument("--start-date", required=True, help="下載開始日期 (格式: YYYY-MM-DD)。")
     parser.add_argument("--end-date", required=True, help="下載結束日期 (格式: YYYY-MM-DD)。")
-    parser.add_argument("--output-path", required=True, help="下載檔案的儲存根目錄。")
+    parser.add_argument("--output-path", required=True, help="下載檔案的本地儲存根目錄。")
+    parser.add_argument("--max-concurrent", type=int, default=10, help="最大並行下載數 (預設: 10)。")
+    parser.add_argument("--sleep-batch", type=float, default=0.05, help="每個下載任務完成後的小延遲 (預設: 0.05s)。")
 
-    # 數據類型開關 (預設為 False)
-    # group = parser.add_argument_group('數據類型選擇 (預設全為否)')
-    data_types_choices = {
-        'futures_trades': '期貨逐筆成交 (Daily_{Y_M_D}.zip)',
-        'options_trades': '選擇權逐筆成交 (OptionsDaily_{Y_M_D}.zip)',
-        'institutional_investors': '三大法人交易概況 (3_1_1_{Y_M_D}.zip)',
-        'put_call_ratio': '選擇權 Put/Call Ratio (PCRatio_{Y_M_D}.zip)',
-        'futures_summary': '期貨每日交易行情 (Daily_Futures_Summary_{Y_M_D}.zip)', # 檔名可能不同，依實際為準
-        'options_summary': '選擇權每日交易行情 (OptionsDaily_Summary_{Y_M_D}.zip)', # 檔名可能不同
-        'final_settlement_price': '最後結算價 (FSP_{Y_M_D}.zip)'
+
+    data_types_choices_map = { # 與舊版一致
+        'futures_trades': '期貨逐筆成交', 'options_trades': '選擇權逐筆成交',
+        'institutional_investors': '三大法人交易概況', 'put_call_ratio': '選擇權 Put/Call Ratio',
+        'futures_summary': '期貨每日交易行情', 'options_summary': '選擇權每日交易行情',
+        'final_settlement_price': '最後結算價'
     }
-    for key, desc in data_types_choices.items():
+    for key, desc in data_types_choices_map.items():
         parser.add_argument(f"--{key.replace('_', '-')}", action='store_true', help=f"是否下載 {desc}。")
-
-    parser.add_argument("--sleep", type=float, default=0.5, help="每次下載請求之間的延遲秒數 (預設: 0.5)。")
-
 
     args = parser.parse_args()
 
@@ -226,16 +263,24 @@ def main():
         print("❌ 錯誤：結束日期不能早於開始日期。", file=sys.stderr)
         sys.exit(1)
 
-    # 將 argparse 的命名空間轉換為字典給 download_data
-    selected_data_types = {key: getattr(args, key) for key in data_types_choices.keys()}
+    selected_data_types_dict = {key: getattr(args, key) for key in data_types_choices_map.keys()}
 
-    if not any(selected_data_types.values()):
+    if not any(selected_data_types_dict.values()):
         print("ℹ️ 提示：未選擇任何數據類型進行下載。若要下載，請至少指定一個數據類型參數 (例如 --futures-trades)。", file=sys.stderr)
-        # 即使沒有選擇任何數據類型，也讓程式正常結束 (exit 0)，因為這不是一個執行錯誤
-        # 或者，可以提示使用者並 exit 1，這裡選擇前者
         sys.exit(0)
 
-    download_data(start_dt, end_dt, args.output_path, selected_data_types, sleep_time=args.sleep)
+    # 為了獨立測試 downloader，這裡的 task_queue 暫時設為 None
+    # 在協調器中，這個佇列會被傳入
+    # asyncio.run() 是 Python 3.7+ 的標準方式來執行一個協程
+    asyncio.run(download_data_async(
+        start_dt,
+        end_dt,
+        args.output_path,
+        selected_data_types_dict,
+        task_queue=None, # 獨立執行時，不使用佇列
+        max_concurrent_downloads=args.max_concurrent,
+        sleep_time_between_batches=args.sleep_batch
+    ))
     sys.exit(0)
 
 if __name__ == "__main__":
