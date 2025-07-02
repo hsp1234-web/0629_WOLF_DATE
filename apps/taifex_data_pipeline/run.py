@@ -26,28 +26,161 @@ import zipfile
 import csv
 import codecs
 
-# --- 路徑自我校正樣板碼 ---
+# --- Start of Integrated Stream Unzipper Logic ---
+
+import asyncio # Already imported, but good to list dependencies
+import zipfile # Already imported, but good to list dependencies
+import io # Already imported, but good to list dependencies
+from typing import AsyncGenerator, Optional # Already imported, but good to list dependencies
+
+class InMemoryStreamUnzipper:
+    """
+    一個內嵌的、非同步的記憶體中 ZIP 解壓縮器。
+    它被設計為直接在主執行腳本中使用，以規避檔案創建問題。
+    """
+
+    def __init__(self, zip_stream_reader, chunk_size: int = 8192):
+        self._zip_stream_reader = zip_stream_reader
+        self._buffer = io.BytesIO()
+        self._chunk_size = chunk_size
+        self._first_file_name: Optional[str] = None # 用於記錄第一個檔案名，以便 close 時可以提供資訊
+
+    async def _load_zip_to_buffer(self) -> bool:
+        """
+        將 ZIP 串流數據載入到內部緩衝區。
+        返回 True 表示成功載入並有內容，False 表示串流為空或出錯。
+        """
+        if not self._zip_stream_reader:
+            # logger.warning("InMemoryStreamUnzipper: _load_zip_to_buffer: zip_stream_reader 為空。") # 假設 logger 在此範圍不可用
+            print("InMemoryStreamUnzipper: _load_zip_to_buffer: zip_stream_reader 為空。", file=sys.stderr)
+            return False
+
+        # 檢查 _zip_stream_reader 是否為 AsyncGenerator
+        if not hasattr(self._zip_stream_reader, '__aiter__') or not hasattr(self._zip_stream_reader, '__anext__'):
+             # logger.error("InMemoryStreamUnzipper: zip_stream_reader 不是一個有效的 AsyncGenerator。")
+             print("InMemoryStreamUnzipper: zip_stream_reader 不是一個有效的 AsyncGenerator。", file=sys.stderr)
+             return False
+
+        try:
+            async for chunk in self._zip_stream_reader:
+                if chunk: # 確保 chunk 不是 None 或空
+                    self._buffer.write(chunk)
+            self._buffer.seek(0)
+            if self._buffer.getbuffer().nbytes == 0:
+                # logger.warning("InMemoryStreamUnzipper: ZIP 串流讀取完畢，但緩衝區為空。")
+                print("InMemoryStreamUnzipper: ZIP 串流讀取完畢，但緩衝區為空。", file=sys.stderr)
+                return False
+            return True
+        except Exception as e:
+            # logger.error(f"InMemoryStreamUnzipper: 從串流讀取 ZIP 數據時發生錯誤: {e}")
+            print(f"InMemoryStreamUnzipper: 從串流讀取 ZIP 數據時發生錯誤: {e}", file=sys.stderr)
+            return False
+
+
+    async def get_uncompressed_stream(self) -> Optional[AsyncGenerator[bytes, None]]:
+        """
+        獲取解壓縮後的數據串流。
+        如果 ZIP 檔案無效、為空或不包含任何檔案，則返回 None。
+        否則，返回一個非同步產生器，用於讀取 ZIP 中第一個檔案的內容。
+        """
+        if not await self._load_zip_to_buffer():
+            # logger.warning("InMemoryStreamUnzipper: get_uncompressed_stream: _load_zip_to_buffer 失敗或緩衝區為空。")
+            print("InMemoryStreamUnzipper: get_uncompressed_stream: _load_zip_to_buffer 失敗或緩衝區為空。", file=sys.stderr)
+            self.close() # 確保緩衝區被清理
+            return None
+
+        try:
+            if not zipfile.is_zipfile(self._buffer):
+                # logger.warning("InMemoryStreamUnzipper: 提供的串流不是有效的 ZIP 檔案。")
+                print("InMemoryStreamUnzipper: 提供的串流不是有效的 ZIP 檔案 (is_zipfile 返回 False)。", file=sys.stderr) # 保留此更明確的日誌
+                self.close()
+                return None
+
+            self._buffer.seek(0) # is_zipfile 可能移動了指標，重置它
+            with zipfile.ZipFile(self._buffer, 'r') as zf:
+                namelist = zf.namelist()
+                if not namelist:
+                    # logger.warning("InMemoryStreamUnzipper: ZIP 檔案為空（不包含任何檔案）。")
+                    print("InMemoryStreamUnzipper: ZIP 檔案為空（不包含任何檔案）。", file=sys.stderr)
+                    # 不需要 self.close() 因為 ZipFile 的 context manager 會處理 self._buffer
+                    # 但由於我們在 finally 中有 close，這裡保持原樣也行
+                    return None
+
+                self._first_file_name = namelist[0]
+                # logger.info(f"InMemoryStreamUnzipper: 正在解壓縮 ZIP 檔案中的第一個檔案: {self._first_file_name}")
+                print(f"InMemoryStreamUnzipper: 正在解壓縮 ZIP 檔案中的第一個檔案: {self._first_file_name}", file=sys.stdout)
+
+                # 注意：zf.open() 返回的 member_stream 是同步的。
+                # 我們需要一個包裝器將其轉換為非同步產生器。
+                # 這裡直接在 ZipFile context manager 內部定義並返回產生器是關鍵，
+                # 以確保 member_stream 在產生器被消耗時仍然有效。
+
+                member_file_bytes = io.BytesIO(zf.read(self._first_file_name))
+
+            # 移出 ZipFile context manager 後再創建產生器
+            # member_file_bytes 現在包含了第一個檔案的全部內容在記憶體中
+
+            async def async_generator_wrapper():
+                try:
+                    while True:
+                        chunk = member_file_bytes.read(self._chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+                        # 在 I/O 密集型操作中加入 await asyncio.sleep(0)
+                        # 是一個好習慣，可以讓事件循環有機會執行其他任務。
+                        await asyncio.sleep(0)
+                finally:
+                    if member_file_bytes:
+                        member_file_bytes.close()
+
+            return async_generator_wrapper()
+
+        except zipfile.BadZipFile:
+            # logger.warning("InMemoryStreamUnzipper: 捕獲到 BadZipFile 錯誤。")
+            print("InMemoryStreamUnzipper: 捕獲到 BadZipFile 錯誤。", file=sys.stderr)
+            self.close() # 確保緩衝區被清理
+            return None
+        except Exception as e:
+            # logger.error(f"InMemoryStreamUnzipper: get_uncompressed_stream 中發生未預期錯誤: {e}")
+            print(f"InMemoryStreamUnzipper: get_uncompressed_stream 中發生未預期錯誤: {e}", file=sys.stderr)
+            self.close() # 確保緩衝區被清理
+            return None
+        # finally 子句不再需要，因為 ZipFile context manager 會處理 self._buffer 的關閉。
+        # 如果 _load_zip_to_buffer 失敗，我們已經 close() 了。
+        # 如果 is_zipfile 或 namelist 檢查失敗，我們也 close() 了。
+        # BadZipFile 也 close() 了。
+        # 成功的路徑，ZipFile context manager 關閉了 buffer，然後我們用 member_file_bytes，
+        # async_generator_wrapper 的 finally 會關閉 member_file_bytes。
+        # 所以，這裡的 finally 可能是不必要的，甚至可能導致重複關閉。
+        # 為了安全起見，如果我們的設計是讓 unzipper 實例一次性使用，
+        # 可以在外部調用 close。或者確保 close 是幂等的。
+
+    def close(self) -> None:
+        """
+        關閉並釋放內部緩衝區。
+        """
+        if self._buffer:
+            # logger.debug(f"InMemoryStreamUnzipper: 正在關閉 BytesIO 緩衝區 (用於 {self._first_file_name or '未知 ZIP 檔案'})。")
+            print(f"InMemoryStreamUnzipper: 正在關閉 BytesIO 緩衝區 (用於 {self._first_file_name or '未知 ZIP 檔案'})。", file=sys.stdout)
+            self._buffer.close()
+            self._buffer = None # type: ignore # 設為 None 以防止重複關閉或使用已關閉的緩衝區
+        # else:
+            # logger.debug("InMemoryStreamUnzipper: close 被調用，但緩衝區已為 None。")
+            # print("InMemoryStreamUnzipper: close 被調用，但緩衝區已為 None。", file=sys.stdout)
+
+# --- End of Integrated Stream Unzipper Logic ---
+
+# --- 路徑自我校正樣板碼 (已移除 InMemoryStreamUnzipper 相關導入) ---
 try:
     current_dir = os.path.dirname(os.path.abspath(__file__))
     apps_dir = os.path.dirname(current_dir)
     project_root = os.path.dirname(apps_dir)
     if apps_dir not in sys.path: sys.path.insert(0, apps_dir)
     if project_root not in sys.path: sys.path.insert(0, project_root)
-    from apps.taifex_data_pipeline.stream_unzipper import InMemoryStreamUnzipper
-except ImportError as e:
-    print(f"導入 InMemoryStreamUnzipper 時發生錯誤: {e}", file=sys.stderr)
-    print(f"導入失敗時的 sys.path: {sys.path}", file=sys.stderr)
-    class InMemoryStreamUnzipper: # type: ignore
-        def __init__(self, zip_stream_reader, descriptor="MockUnzipper"): self.descriptor = descriptor
-        async def get_uncompressed_stream(self) -> AsyncGenerator[bytes, None]:
-            print(f"警告: 使用 Mock InMemoryStreamUnzipper 的 get_uncompressed_stream (因導入失敗 for {self.descriptor})")
-            if False: yield b""
-            return
-        def close(self): pass
-        async def __aenter__(self): return self # Mock needs these if run.py uses async with
-        async def __aexit__(self,et,ev,tb): self.close()
+    # from apps.taifex_data_pipeline.stream_unzipper import InMemoryStreamUnzipper # 已移除
 except Exception as e:
-    print(f"路徑校正或導入時發生錯誤: {e}", file=sys.stderr)
+    print(f"路徑校正時發生錯誤: {e}", file=sys.stderr)
 # --- 路徑自我校正樣板碼結束 ---
 
 warnings.filterwarnings("ignore", message=".*_PyDriveImportHook.find_spec.*")
