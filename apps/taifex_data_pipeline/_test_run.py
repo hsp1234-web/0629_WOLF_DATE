@@ -170,12 +170,21 @@ class TestTaifexDataPipelineBatch(unittest.TestCase): # 更名以區分
             import pandas as pd
             df_processed = pd.read_parquet(result.get("file"))
             self.assertEqual(len(df_processed), 2, "Parquet 檔案中的行數與預期不符。")
+
             # 檢查 price 和 volume 是否都是數值類型且不含 NaN (因為 NaN 的行已被移除)
-            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['price']))
-            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['volume']))
-            self.assertFalse(df_processed['price'].isnull().any())
-            self.assertFalse(df_processed['volume'].isnull().any())
-            self.logger.debug("Parquet 檔案內容驗證通過。")
+            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['price']), "處理後的 'price' 欄位應為數值類型。")
+            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['volume']), "處理後的 'volume' 欄位應為數值類型。")
+            self.assertFalse(df_processed['price'].isnull().any(), "'price' 欄位不應包含 NaN 值（NaN 的行已被移除）。")
+            self.assertFalse(df_processed['volume'].isnull().any(), "'volume' 欄位不應包含 NaN 值（NaN 的行已被移除）。")
+
+            # 新增：驗證 source 欄位
+            self.assertIn('source', df_processed.columns, "Parquet 檔案應包含 'source' 欄位。")
+            self.assertEqual(df_processed['source'].nunique(), 1, "'source' 欄位應只有一個唯一值。")
+            self.assertEqual(df_processed['source'].iloc[0], descriptor,
+                             f"'source' 欄位的值應為檔案描述符 '{descriptor}'，實際為 '{df_processed['source'].iloc[0]}'")
+            self.assertTrue(pd.api.types.is_object_dtype(df_processed['source']), "'source' 欄位應為 object (string) 類型。")
+
+            self.logger.debug("Parquet 檔案內容及 source 欄位驗證通過。")
 
         self.logger.info("--- test_process_file_with_scl_trigger_sample 執行完畢 --- (QA)")
 

@@ -346,18 +346,20 @@ def pipeline_tick_data(df: pd.DataFrame, source: str) -> pd.DataFrame:
     logger.debug(f"[{source}] df.dtypes after numeric conversion:\n{df.dtypes}")
 
     df_before_dropna = df.copy()
-    df_processed = df.dropna(subset=['trade_datetime','product_id','price','volume'])
+    # Ensure df_processed is a copy to avoid SettingWithCopyWarning
+    df_processed = df.dropna(subset=['trade_datetime','product_id','price','volume']).copy()
 
     if len(df_processed) == 0 and len(df_before_dropna) > 0:
         logger.warning(f"[{source}] All rows were dropped by dropna. Price or Volume likely all NaN after coercion.")
-        logger.warning(f"[{source}] Price column before dropna (first 5):\n{df_before_dropna['price'].head()}")
-        logger.warning(f"[{source}] Volume column before dropna (first 5):\n{df_before_dropna['volume'].head()}")
-        logger.warning(f"[{source}] Product ID column before dropna (first 5):\n{df_before_dropna['product_id'].head()}")
-        logger.warning(f"[{source}] Trade Datetime column before dropna (first 5):\n{df_before_dropna['trade_datetime'].head()}")
+        logger.warning(f"[{source}] Price column before dropna (first 5):\n{df_before_dropna['price'].head().to_string()}")
+        logger.warning(f"[{source}] Volume column before dropna (first 5):\n{df_before_dropna['volume'].head().to_string()}")
+        logger.warning(f"[{source}] Product ID column before dropna (first 5):\n{df_before_dropna['product_id'].head().to_string()}")
+        logger.warning(f"[{source}] Trade Datetime column before dropna (first 5):\n{df_before_dropna['trade_datetime'].head().to_string()}")
 
+    if not df_processed.empty: # Only add source if df_processed is not empty
+        df_processed['source'] = source # Now this should be safe
 
-    df['source'] = source # This should be on df_processed
-    return df_processed # Return the processed (potentially smaller) dataframe
+    return df_processed
 
 def pipeline_institutional_investors(df: pd.DataFrame, source: str) -> pd.DataFrame:
     map_ = {'身份別':'investor_type','商品名稱':'product_name'}
