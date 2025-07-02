@@ -139,59 +139,10 @@ FORMAT_MAP_FILENAME = "format_map.json" # 將與 DB 同目錄存放
 # 將會從 Colab 腳本逐步遷移並適應化到這裡。
 # 由於這些函式很多且複雜，我將分批次加入並確保它們能在此獨立腳本環境中運作。
 
-# [佔位符 - 檔案發現與解析邏輯]
-def discover_files_recursively(root_path: str) -> Generator[Tuple[str, bytes], None, None]:
-    # (與原 Colab 腳本中的實作相同或微調)
-    if not os.path.exists(root_path):
-        logger.warning(f"指定的輸入路徑不存在: {root_path}")
-        return
-    items_to_scan = [] # 使用 list 來模擬 queue，方便 sorted
-    for item_name in sorted(os.listdir(root_path)):
-        items_to_scan.append((item_name, os.path.join(root_path, item_name)))
-
-    processed_count = 0
-    while items_to_scan:
-        descriptor, current_path = items_to_scan.pop(0) # FIFO for breadth-first like
-        try:
-            if os.path.isdir(current_path):
-                # logger.debug(f"掃描目錄: {current_path}")
-                # 將子項目加入佇列前端，以優先處理當前目錄的子項 (若要深度優先則反之)
-                # 為了保持與原 discover_files_recursively 的行為一致 (似乎是某種混合)，這裡直接添加
-                new_items = []
-                for name_in_dir in sorted(os.listdir(current_path)): # 排序以確保一致性
-                    new_items.append((f"{descriptor}/{name_in_dir}", os.path.join(current_path, name_in_dir)))
-                items_to_scan = new_items + items_to_scan # 潛在的深度優先行為
-                continue
-
-            # logger.debug(f"準備讀取檔案: {current_path} (描述符: {descriptor})")
-            with open(current_path, 'rb') as f_content:
-                content_bytes = f_content.read()
-
-            import zipfile # 延後 import
-            if current_path.lower().endswith('.zip') and zipfile.is_zipfile(io.BytesIO(content_bytes)):
-                # logger.debug(f"解壓縮 ZIP 檔案: {descriptor}")
-                with zipfile.ZipFile(io.BytesIO(content_bytes), 'r') as zf:
-                    zip_members = []
-                    for member_info in sorted(zf.infolist(), key=lambda mi: mi.filename): # 按名稱排序
-                        if member_info.is_dir() or '__MACOSX' in member_info.filename:
-                            continue
-                        # logger.debug(f"  準備從 ZIP 讀取: {member_info.filename}")
-                        with zf.open(member_info) as member_file:
-                            member_content_bytes = member_file.read()
-                        yield f"{descriptor} -> {member_info.filename}", member_content_bytes
-                        processed_count +=1
-            else:
-                yield descriptor, content_bytes
-                processed_count += 1
-        except FileNotFoundError:
-            logger.warning(f"掃描時檔案消失: {current_path}")
-        except Exception as e:
-            logger.warning(f"讀取或解壓縮 '{descriptor}' ({current_path}) 時出錯: {e}")
-    # logger.info(f"discover_files_recursively 完成，共處理 {processed_count} 個檔案/成員。")
-
+# [v18.0] 移除 discover_files_recursively, run_parsing_stage, worker_process_file (其邏輯將整合)
 
 def determine_parsing_recipe(content_bytes: bytes, descriptor: str) -> Optional[Dict[str, Any]]:
-    # (與原 Colab 腳本中的實作相同或微調)
+    # (與原 Colab 腳otá中的實作相同或微調)
     if not content_bytes: return None
     if descriptor.lower().endswith('.ods'): return {"parser": "excel_ods", "args": {}, "pipeline": "unknown"} # ods 暫不深入處理
 
@@ -229,9 +180,6 @@ def determine_parsing_recipe(content_bytes: bytes, descriptor: str) -> Optional[
             break
 
     # 基礎參數
-    # 問題2修正: "dtype": str -> "dtype": "str" (或其他 pandas 可接受的字串表示)
-    # pandas read_csv 的 dtype 可以接受 'str' 或 object (代表字串)
-    # 為了 JSON 序列化，這裡使用字串 'str'
     base_args = {"encoding": detected_encoding, "skipinitialspace": True, "thousands": ',', "dtype": "str", "on_bad_lines": "warn"}
 
     # --- 開始根據內容特徵判斷 ---
@@ -311,18 +259,8 @@ def determine_parsing_recipe(content_bytes: bytes, descriptor: str) -> Optional[
                 manual_csv_args = {**base_args, "names_key": 'futures_daily', "header": None, "skiprows": 0}
                 return {"parser": "csv_manual_cols", "args": manual_csv_args, "pipeline": "daily_ohlc"}
 
-        # 可以為 options_daily_v1 (18欄位) / v2 (20欄位) 也加入類似的無表頭判斷 (如果需要)
-        # 例如 options_daily_v1:
-        # elif potential_data_cols_count == len(MANUAL_COLUMN_NAMES['options_daily_v1']):
-        #     first_field = header_line_raw.split(',')[0].strip()
-        #     if re.match(r"^\d{8}$", first_field) or re.match(r"^\d{4}/\d{2}/\d{2}$", first_field):
-        #         logger.info(f"檔案 {descriptor} 符合 options_daily_v1 (無表頭) 的欄位數 ({potential_data_cols_count}) 和日期格式，嘗試使用 csv_manual_cols。")
-        #         manual_csv_args = {**base_args, "names_key": 'options_daily_v1', "header": None, "skiprows": 0}
-        #         return {"parser": "csv_manual_cols", "args": manual_csv_args, "pipeline": "daily_ohlc"}
-
     logger.warning(f"未能為檔案 {descriptor} 確定解析配方。內容預覽 (前3行):\n{sample_lines[:3]}")
     return {"parser": "unknown", "args": {"encoding": detected_encoding}, "pipeline": "unknown"}
-
 
 def parse_with_recipe(content_bytes: bytes, recipe: Dict[str, Any], descriptor: str) -> Optional[pd.DataFrame]:
     # (與原 Colab 腳本中的實作相同或微調)
@@ -371,7 +309,7 @@ def parse_with_recipe(content_bytes: bytes, recipe: Dict[str, Any], descriptor: 
 def _clean_and_prepare_df(df: pd.DataFrame, required_cols: List[str], rename_map: Dict[str, str]) -> pd.DataFrame:
     """標準化欄位名，檢查必要欄位。"""
     # 統一小寫，替換特殊字元
-    df.columns = [str(col).strip().lower().replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_').replace('%', 'percent') for col in df.columns]
+    df.columns = [str(col).strip().lower().replace(' ', '_').replace('(', '').replace(')', '').replace('/', '_').replace('%', 'percent').replace('+', 'plus') for col in df.columns]
     # 執行更名
     df_clean = df.rename(columns=lambda c: rename_map.get(c, c))
 
@@ -434,7 +372,7 @@ def pipeline_tick_data(df: pd.DataFrame, source_descriptor: str) -> pd.DataFrame
         '成交價格': 'price',
         '成交數量_買賣別_': 'volume_with_side', # 舊的 "成交數量(B/S)" (帶括號)
         '成交數量_b_or_s_': 'volume_with_side', # 另一種可能的 "成交數量(B/S)" (無括號但有底線)
-        '成交數量_b+s_': 'volume', # 新增：對應真實數據 "成交數量(B+S)" -> "成交數量_b+s_" (由 _clean_and_prepare_df 轉換)
+        '成交數量_bplus_s_': 'volume', # Hotfix: 對應真實數據 "成交數量(B+S)" -> "成交數量_bplus_s_" (由 _clean_and_prepare_df 轉換)
         '成交數量': 'volume' # 如果直接有 "成交數量" 欄位
     }
     # 確保 'volume' 是 pipeline_tick_data 的核心欄位之一，即使它可能來自不同原始名稱
@@ -461,6 +399,8 @@ def pipeline_tick_data(df: pd.DataFrame, source_descriptor: str) -> pd.DataFrame
         df_clean['option_type'] = df_clean['option_type'].astype(str).str.strip().map({'C': 'C', 'P': 'P', '買': 'C', '賣': 'P'})
 
     # 處理成交量 (可能在 'volume' 或 'volume_with_side' 中)
+    # 這段邏輯在 rename_map 直接對應到 'volume' 後，可能大部分情況下不再需要
+    # 但保留它以處理 'volume_with_side' 這種更複雜的原始欄位名
     if 'volume' not in df_clean.columns and 'volume_with_side' in df_clean.columns:
         # 從 '成交數量(B/S)' 中提取數字部分作為 volume
         df_clean['volume'] = df_clean['volume_with_side'].astype(str).str.extract(r'(\d+)').iloc[:, 0]
@@ -574,52 +514,261 @@ PIPELINE_MAP = {
     "unknown": lambda df, source: logger.warning(f"資料來源 {source} 的管線未知，跳過清洗。") or df # 未知管線直接返回原 df
 }
 
-# [佔位符 - 並行處理與主流程 worker_process_file, run_parsing_stage, run_duckdb_loading_stage]
-def worker_process_file(args_tuple: Tuple[str, bytes, Dict, str, Any]) -> Dict[str, Any]:
-    descriptor, content_bytes, recipe, staging_dir_path, hw_manager_ref = args_tuple
-    # logger.debug(f"工人開始處理: {descriptor[:50]}...")
+# determine_parsing_recipe, parse_with_recipe, _clean_and_prepare_df,
+# pipeline_* functions, PIPELINE_MAP 保持不變 (或微調以適應單檔案處理流程)
+# ... (這些函式定義不變，此處省略以簡潔) ...
+# (此處假設以上函式定義與前一版本相同，僅作標記)
+# [舊函式定義結束] - 實際程式碼中這些函式仍然存在
+
+# 新的單檔案處理核心函式
+def process_single_file_entry(
+    file_path: str,
+    descriptor: str, # 描述符，例如 "zip_filename -> internal_csv_filename" 或僅檔名
+    db_conn: duckdb.DuckDBPyConnection,
+    format_map: dict, # 共享的格式地圖 (dict)
+    hw_manager: HardwareManager # 用於日誌
+    # temp_processing_dir: str # 如果需要解壓縮ZIP內的檔案到臨時位置
+) -> Dict[str, Any]:
+    """
+    處理從佇列接收到的單個檔案條目：讀取、解析、清洗並直接寫入 DuckDB。
+    返回處理結果字典。
+    """
+    logger.info(f"開始處理佇列項目: {descriptor}")
+    hw_manager.log_event_snapshot(f"開始處理: {descriptor[:40]}")
+
+    processed_rows_count = 0
+    status = "error" # 預設狀態
+    message = ""
+
     try:
-        parsed_df = parse_with_recipe(content_bytes, recipe, descriptor)
-        if parsed_df is None or parsed_df.empty:
-            # logger.info(f"檔案 {descriptor} 解析後為空或解析失敗，跳過。")
-            return {'status': 'skipped_empty_or_parse_fail', 'message': "解析後為空或解析失敗", 'descriptor': descriptor}
+        # 1. 讀取檔案內容
+        #    如果 file_path 是 ZIP 內的檔案，協調器需要先解壓到一個臨時位置，
+        #    然後將該臨時 CSV 的路徑放入佇列。或者此函式處理 ZIP 解壓。
+        #    為簡化，假設 file_path 已是可直接讀取的 CSV 檔案路徑。
+        #    如果佇列項目是 {'type':'zip', 'path':'/path/to.zip', 'member':'file.csv'}
+        #    則需要先處理解壓縮。
+        #    目前計畫是 downloader 將下載的 ZIP 路徑放入佇列，
+        #    pipeline 的 worker 需要能處理 ZIP。
+        #    或者，downloader 解壓後將 CSV 路徑放入佇列。
+        #    根據 v18.0 階段一，downloader 放入的是 ZIP 的本地路徑。
+        #    因此，pipeline worker 需要處理 ZIP。
 
-        pipeline_name = recipe.get("pipeline", "unknown")
-        pipeline_func = PIPELINE_MAP.get(pipeline_name)
+        content_bytes_list_with_descriptors = []
+        if file_path.lower().endswith('.zip'):
+            import zipfile # 延後 import
+            try:
+                with open(file_path, 'rb') as f_zip:
+                    zip_content_bytes = f_zip.read() # 讀取整個 ZIP
+                if not zipfile.is_zipfile(io.BytesIO(zip_content_bytes)):
+                    raise ValueError(f"檔案 {file_path} 不是有效的 ZIP 檔案。")
 
-        if not pipeline_func:
-            logger.warning(f"檔案 {descriptor} 找不到對應的管線 '{pipeline_name}'，跳過清洗。")
-            # 即使沒有管線，如果解析成功，也可以考慮是否要儲存原始解析結果
-            # 目前行為：沒有對應管線則不儲存到 staging
-            return {'status': 'skipped_no_pipeline', 'message': f"找不到管線 '{pipeline_name}'", 'descriptor': descriptor}
+                with zipfile.ZipFile(io.BytesIO(zip_content_bytes), 'r') as zf:
+                    for member_info in sorted(zf.infolist(), key=lambda mi: mi.filename):
+                        if member_info.is_dir() or '__MACOSX' in member_info.filename:
+                            continue
+                        with zf.open(member_info) as member_file:
+                            content_bytes = member_file.read()
+                        content_bytes_list_with_descriptors.append(
+                            (f"{descriptor} -> {member_info.filename}", content_bytes)
+                        )
+                if not content_bytes_list_with_descriptors:
+                    logger.info(f"ZIP 檔案 {descriptor} 為空或不包含有效成員。")
+                    return {'status': 'skipped_empty_zip', 'message': "ZIP為空或無有效成員", 'descriptor': descriptor, 'rows_added': 0}
 
-        # logger.debug(f"檔案 {descriptor} 應用管線: {pipeline_name}")
-        cleaned_df = pipeline_func(parsed_df, descriptor) #傳遞 descriptor 給 source 欄位
+            except Exception as e_zip:
+                logger.error(f"處理 ZIP 檔案 {descriptor} 時發生錯誤: {e_zip}")
+                return {'status': 'error_zip_processing', 'message': str(e_zip), 'descriptor': descriptor, 'rows_added': 0}
+        else: # 非 ZIP 檔案，直接作為單個內容處理
+            with open(file_path, 'rb') as f_direct:
+                content_bytes = f_direct.read()
+            content_bytes_list_with_descriptors.append((descriptor, content_bytes))
 
-        if cleaned_df is None or cleaned_df.empty: # 管線可能返回 None 或空 DataFrame
-            # logger.info(f"檔案 {descriptor} 經過管線 {pipeline_name} 清洗後為空，跳過。")
-            return {'status': 'skipped_empty_after_clean', 'message': "數據清洗後為空", 'descriptor': descriptor}
+        # 迭代處理（可能是 ZIP 內的多個檔案，或單個檔案）
+        total_rows_added_for_entry = 0
+        all_successful_pipelines = []
 
-        # 為 Parquet 檔案產生唯一的名稱，避免衝突
-        # 使用 descriptor 的 hash，因為 descriptor 包含原始路徑和 ZIP 內路徑，比較唯一
-        file_hash = hashlib.sha256(descriptor.encode('utf-8')).hexdigest()[:16]
-        staging_file_path = os.path.join(staging_dir_path, f"{pipeline_name}_{file_hash}.parquet")
+        for item_descriptor, item_content_bytes in content_bytes_list_with_descriptors:
+            if not item_content_bytes:
+                logger.info(f"內容為空: {item_descriptor}，跳過。")
+                continue
 
-        # logger.debug(f"準備將 {descriptor} 寫入 Parquet: {staging_file_path} (行數: {len(cleaned_df)})")
-        cleaned_df.to_parquet(staging_file_path, engine='pyarrow', index=False)
-        # logger.info(f"檔案 {descriptor} 成功處理並儲存為 Parquet。")
-        return {'status': 'success', 'rows_processed': len(cleaned_df), 'pipeline': pipeline_name, 'descriptor': descriptor, 'staged_file': staging_file_path}
+            # 2. 獲取/更新解析配方 (使用 item_content_bytes 的雜湊)
+            content_hash = hashlib.sha256(item_content_bytes).hexdigest()
+            recipe = format_map.get(content_hash)
+            map_updated_by_this_item = False
+            if not recipe:
+                recipe = determine_parsing_recipe(item_content_bytes, item_descriptor)
+                if recipe:
+                    format_map[content_hash] = recipe
+                    map_updated_by_this_item = True # 標記 format_map 已更新
+                    logger.info(f"動態學習: 為 '{item_descriptor[:60]}' 配方 -> {recipe.get('pipeline','unknown')}")
+                else:
+                    format_map[content_hash] = {"parser": "unknown", "pipeline": "unknown", "args": {}}
+                    map_updated_by_this_item = True
+                    logger.warning(f"學習失敗: 無法為 '{item_descriptor[:60]}' 建立配方。")
 
+            if not recipe or recipe.get("pipeline") == "unknown" or recipe.get("parser") in ["unknown", "unknown_encoding"]:
+                logger.warning(f"'{item_descriptor[:60]}' 配方未知或無效，跳過。")
+                continue
+
+            # 3. 解析
+            parsed_df = parse_with_recipe(item_content_bytes, recipe, item_descriptor)
+            if parsed_df is None or parsed_df.empty:
+                logger.info(f"'{item_descriptor[:60]}' 解析後為空，跳過。")
+                continue
+
+            # 4. 清洗
+            pipeline_name = recipe.get("pipeline")
+            pipeline_func = PIPELINE_MAP.get(pipeline_name)
+            if not pipeline_func:
+                logger.warning(f"'{item_descriptor[:60]}' 無對應管線 '{pipeline_name}'，跳過。")
+                continue
+
+            cleaned_df = pipeline_func(parsed_df, item_descriptor) # descriptor 作為 source
+            if cleaned_df is None or cleaned_df.empty:
+                logger.info(f"'{item_descriptor[:60]}' 清洗後為空，跳過。")
+                continue
+
+            # 5. 直接寫入 DuckDB (整合原 run_duckdb_loading_stage 的邏輯)
+            target_table_name = pipeline_name # pipeline 名稱即為表格名稱
+            if target_table_name not in TABLE_DEFINITIONS:
+                logger.warning(f"目標表格 '{target_table_name}' (來自 {item_descriptor}) 未定義，跳過寫入。")
+                continue
+
+            # --- DuckDB 寫入邏輯開始 (針對 cleaned_df) ---
+            # 創建臨時表名，基於原始描述符和內容哈希，以確保唯一性
+            # temp_staging_table_for_df = f"temp_staging_{target_table_name}_{content_hash[:8]}"
+
+            # DuckDB 的 register 方法可以直接將 Pandas DataFrame 註冊為臨時視圖/表
+            # db_conn.register(temp_staging_table_for_df, cleaned_df)
+            # logger.info(f"  ↳ DataFrame ({len(cleaned_df)}筆) 已註冊為臨時表 '{temp_staging_table_for_df}'")
+
+            # 獲取目標表和 DataFrame 的欄位 (已在 cleaned_df 中標準化)
+            target_table_cols_desc = db_conn.execute(f"DESCRIBE {target_table_name};").fetchall()
+            df_cols_set = set(cleaned_df.columns)
+
+            target_cols_set = {col_info[0] for col_info in target_table_cols_desc if col_info[0] != 'id'}
+            common_cols_for_insert = list(target_cols_set.intersection(df_cols_set))
+
+            if not common_cols_for_insert:
+                logger.warning(f"  ↳ 表格 '{target_table_name}' 與 DataFrame ({item_descriptor}) 無共同欄位 (除id)，無法插入。")
+                # db_conn.unregister(temp_staging_table_for_df) # 清理臨時註冊
+                continue
+
+            common_cols_str_quoted = ", ".join([f'"{c}"' for c in common_cols_for_insert])
+
+            # 預先去重邏輯 (如果適用)
+            unique_constraint_cols_str = ""
+            final_df_to_insert = cleaned_df[common_cols_for_insert] # 只選擇共同欄位
+
+            if target_table_name in UNIQUE_INDICES:
+                match_uq = re.search(r'\((.*?)\)', UNIQUE_INDICES[target_table_name])
+                if match_uq:
+                    unique_constraint_cols_str = match_uq.group(1)
+                    # 確保 unique_constraint_cols_str 中的所有欄位都在 final_df_to_insert 中
+                    unique_cols_list = [c.strip() for c in unique_constraint_cols_str.split(',')]
+                    if all(c in final_df_to_insert.columns for c in unique_cols_list):
+                         # 使用 DataFrame 的 drop_duplicates
+                        final_df_to_insert = final_df_to_insert.drop_duplicates(subset=unique_cols_list, keep='first')
+                        logger.info(f"  ↳ DataFrame ({item_descriptor}) 基於 ({unique_constraint_cols_str}) 去重後剩餘 {len(final_df_to_insert)} 筆。")
+                    else:
+                        logger.warning(f"  ↳ 表格 '{target_table_name}' 的唯一約束欄位 {unique_cols_list} 部分不在DataFrame欄位中，跳過基於業務鍵的DataFrame去重。")
+                        unique_constraint_cols_str = "" # 重置，以避免後續錯誤使用
+
+            if final_df_to_insert.empty:
+                logger.info(f"  ↳ DataFrame ({item_descriptor}) 去重後為空，跳過插入。")
+                # db_conn.unregister(temp_staging_table_for_df)
+                continue
+
+            # 插入數據
+            # DuckDB Python client can directly insert a Pandas DataFrame into a table.
+            # We need to handle the 'id' column generation using sequence.
+            # One way is to insert common_cols and let 'id' be generated by default if table is set up with it,
+            # or select nextval explicitly if inserting all columns.
+            # For simplicity with ON CONFLICT, it's often easier if the DataFrame matches the target table structure (minus id).
+
+            # 由於我們要使用 nextval('seq_...') 和 ON CONFLICT，直接使用 SQL 插入更可靠
+            # 將 DataFrame 註冊為臨時表，然後用 SQL 插入
+            temp_df_view_name = f"temp_df_view_{content_hash[:8]}"
+            db_conn.register(temp_df_view_name, final_df_to_insert)
+
+            insert_sql_core = f"""
+                INSERT INTO {target_table_name} (id, {common_cols_str_quoted})
+                SELECT nextval('seq_{target_table_name}'), {common_cols_str_quoted}
+                FROM {temp_df_view_name}
+            """
+
+            if UNIQUE_INDICES.get(target_table_name) and unique_constraint_cols_str:
+                # 確保索引存在 (如果不存在會創建)
+                try: db_conn.execute(UNIQUE_INDICES[target_table_name])
+                except Exception: pass # 可能已存在，忽略錯誤
+
+                conflict_target_cols_quoted = ", ".join([f'"{c.strip()}"' for c in unique_constraint_cols_str.split(',')])
+                insert_sql = f"{insert_sql_core} ON CONFLICT ({conflict_target_cols_quoted}) DO NOTHING;"
+                logger.info(f"  ↳ 執行基於業務鍵 ({conflict_target_cols_quoted}) 的去重插入。")
+            else: # 基於 id 的衝突 (如果 id 是主鍵)
+                insert_sql = f"{insert_sql_core} ON CONFLICT (id) DO NOTHING;"
+                logger.info(f"  ↳ 執行基於ID的衝突插入。")
+
+            db_conn.execute(insert_sql)
+            db_conn.unregister(temp_df_view_name) # 清理臨時視圖
+
+            # 這裡無法輕易獲得實際插入的行數，除非用 SELECT COUNT(*) 前後比較
+            # 但我們知道 final_df_to_insert 的行數是嘗試插入的行數
+            rows_attempted_this_df = len(final_df_to_insert)
+            total_rows_added_for_entry += rows_attempted_this_df
+            all_successful_pipelines.append(pipeline_name)
+            logger.success(f"  ↳ DataFrame ({item_descriptor}) 的 {rows_attempted_this_df} 筆記錄嘗試寫入 '{target_table_name}'。")
+            # --- DuckDB 寫入邏輯結束 ---
+
+        # 如果整個佇列項目（可能是ZIP）被成功處理了至少一個內部檔案
+        if total_rows_added_for_entry > 0 or not content_bytes_list_with_descriptors: # 如果zip為空也算成功處理
+            status = "success"
+            message = f"成功處理 {len(content_bytes_list_with_descriptors)} 個內部項目, 嘗試加入 {total_rows_added_for_entry} 筆記錄到 {list(set(all_successful_pipelines))}。"
+        elif not message : # 如果沒有任何成功，但也沒有特定錯誤訊息
+            status = "skipped_all_items"
+            message = "所有內部項目均被跳過或為空。"
+
+
+    except FileNotFoundError:
+        logger.error(f"處理佇列項目時檔案不存在: {file_path}")
+        status = "error_file_not_found"
+        message = f"檔案不存在: {file_path}"
     except Exception as e:
-        logger.error(f"工人處理檔案 {descriptor} 時發生嚴重錯誤: {e}") # 移除 exc_info=True
-        return {'status': 'error', 'message': f"{type(e).__name__}: {e}", 'descriptor': descriptor}
-    finally:
-        if hw_manager_ref: # 檢查是否存在 (雖然應該總是存在)
-             hw_manager_ref.log_event_snapshot(f"處理後: {descriptor[:40]}...")
+        logger.error(f"處理佇列項目 {descriptor} 時發生未預期錯誤: {e}")
+        status = "error_processing_entry"
+        message = str(e)
+
+    hw_manager.log_event_snapshot(f"處理完成: {descriptor[:40]} -> {status}")
+    return {'status': status, 'message': message, 'descriptor': descriptor, 'rows_added': total_rows_added_for_entry, 'map_updated_internally': map_updated_by_this_item if 'map_updated_by_this_item' in locals() else False}
 
 
-def run_parsing_stage(input_dir: str, staging_dir: str, format_map_path: str, hw_manager: HardwareManager) -> Tuple[bool, int, int, int, int]:
-    logger.header("階段一: 解析原始檔至本地暫存區 (Parquet)")
+# 原 run_duckdb_loading_stage 函式將被移除或其邏輯併入 process_single_file_entry 和 run_pipeline_from_queue
+
+
+# ==============================================================================
+# 主執行函數 (v18.0 佇列驅動版本)
+# ==============================================================================
+def run_pipeline_from_queue(
+    task_queue: Any, # multiprocessing.Queue or queue.Queue
+    db_file_path: str,
+    format_map_path: str,
+    processing_temp_dir: str, # 用於解壓縮等，如果 process_single_file_entry 需要
+    hw_settings: Dict[str, Any],
+    stop_sentinel: Any = "STOP_PROCESSING_PIPELINE" # 哨兵值
+):
+    logger.header("TAIFEX 數據精煉廠 v18.0 (佇列模式) 啟動")
+
+    hw_manager = HardwareManager(
+        user_max_workers=hw_settings.get("max_workers"),
+        user_memory_limit_gb=hw_settings.get("memory_limit_gb")
+    )
+    hw_manager.display_initial_dashboard()
+
+    # 建立必要的目錄 (通常由協調器或 main 函式處理，但這裡也檢查一下)
+    os.makedirs(os.path.dirname(db_file_path), exist_ok=True)
+    os.makedirs(os.path.dirname(format_map_path), exist_ok=True)
+    os.makedirs(processing_temp_dir, exist_ok=True)
 
     # 載入或初始化 format_map
     format_map = {}
@@ -627,423 +776,194 @@ def run_parsing_stage(input_dir: str, staging_dir: str, format_map_path: str, hw
         try:
             with open(format_map_path, 'r', encoding='utf-8') as f_map:
                 format_map = json.load(f_map)
-            logger.info(f"已成功從 {format_map_path} 載入格式地圖，包含 {len(format_map)} 筆配方。")
+            logger.info(f"已成功從 {format_map_path} 載入格式地圖 ({len(format_map)}筆)。")
         except Exception as e_map_load:
             logger.warning(f"載入格式地圖 {format_map_path} 失敗: {e_map_load}。將建立新地圖。")
-            format_map = {} # 確保是空字典
-    else:
-        logger.info("未找到現有格式地圖，將在執行過程中自動建立。")
 
-    logger.section("掃描本地輸入目錄並建立工作清單...")
-    jobs_to_process = []
-    format_map_updated_in_session = False
+    format_map_changed_during_run = False
 
-    all_files_discovered = list(discover_files_recursively(input_dir))
-    if not all_files_discovered:
-        logger.warning(f"在輸入目錄 {input_dir} 中未發現任何檔案。")
-        return False, 0, 0, 0, 0
+    # 初始化 DuckDB 連接
+    db_conn = None
+    try:
+        db_conn = duckdb.connect(database=db_file_path, read_only=False)
+        logger.success(f"成功連接至 DuckDB: {db_file_path}")
+        # 設定 DuckDB 環境 (如果需要，但通常在連接字串或PRAGMA中設定)
+        # db_conn.execute(f"SET memory_limit = '{hw_manager.memory_limit_gb}GB';") # 已由 hw_manager 內部設定
+        # db_conn.execute(f"SET threads = {hw_manager.max_workers};")
+        db_conn.execute(f"SET temp_directory = '{os.path.join(processing_temp_dir, 'duckdb_worker_temp')}';")
 
-    logger.info(f"在 {input_dir} 中發現 {len(all_files_discovered)} 個檔案/壓縮檔成員。")
+        # 建立 schema (表格、序列、索引)
+        for seq_sql in SEQUENCES.values(): db_conn.execute(seq_sql)
+        for table_sql in TABLE_DEFINITIONS.values(): db_conn.execute(table_sql)
+        # 唯一索引通常在數據插入後或期間建立，以優化大量插入性能
+        # 但如果依賴 ON CONFLICT (業務鍵)，則需先建立
+        # 這裡的邏輯是 process_single_file_entry 內部會嘗試建立
+        logger.info("資料庫 schema (表格、序列) 已確認/建立。唯一索引將在寫入時處理。")
 
-    for descriptor, content_bytes in all_files_discovered:
-        # 使用內容的 hash 作為 key，因為檔名可能重複，但內容決定格式
-        content_hash = hashlib.sha256(content_bytes).hexdigest()
+    except Exception as e_db_init:
+        logger.error(f"佇列處理器：資料庫初始化失敗 ({db_file_path}): {e_db_init}")
+        # 如果DB無法初始化，則無法繼續處理佇列
+        if db_conn: db_conn.close()
+        return # 或拋出例外
 
-        recipe_for_file = format_map.get(content_hash)
-        if not recipe_for_file: # 如果此內容的配方不在地圖中
-            # logger.debug(f"內容雜湊 {content_hash} (來自 {descriptor}) 不在格式地圖中，嘗試動態判斷...")
-            recipe_for_file = determine_parsing_recipe(content_bytes, descriptor)
-            if recipe_for_file: # 如果成功判斷出配方
-                format_map[content_hash] = recipe_for_file # 更新地圖
-                format_map_updated_in_session = True
-                # logger.info(f"動態學習: 為 '{descriptor[:70]}...' (雜湊: {content_hash[:8]}) 建立配方 -> {recipe_for_file.get('pipeline', 'unknown')}")
-            else: # 如果無法判斷配方
-                logger.warning(f"學習失敗: 無法為 '{descriptor[:70]}...' (雜湊: {content_hash[:8]}) 建立有效配方。將標記為未知。")
-                format_map[content_hash] = {"parser": "unknown", "pipeline": "unknown", "args": {}} # 存入未知標記，避免重複判斷
-                format_map_updated_in_session = True # 即使是未知，也算更新了地圖
+    total_files_processed = 0
+    total_rows_accumulated = 0
 
-        # 只有當配方有效且管線不是 "unknown" 時才加入處理任務
-        if recipe_for_file and recipe_for_file.get("pipeline") != "unknown" and recipe_for_file.get("parser") not in ["unknown", "unknown_encoding"]:
-            jobs_to_process.append((descriptor, content_bytes, recipe_for_file, staging_dir, hw_manager))
-        else:
-            logger.info(f"檔案 '{descriptor[:70]}...' 的配方為未知或無效，將跳過處理。配方: {recipe_for_file}")
+    while True:
+        try:
+            # 佇列項目預期是下載器放入的檔案路徑 (str) 或包含路徑的字典
+            # 例如: {'type': 'file', 'path': '/path/to/downloaded_file.zip', 'original_url': '...'}
+            # 或直接是 '/path/to/downloaded_file.zip'
+            # 哨兵值用於停止
+            queue_item = task_queue.get(timeout=5) # timeout 防止永久阻塞，但協調器應保證哨兵
+
+            if queue_item == stop_sentinel:
+                logger.info("收到停止信號，結束佇列處理。")
+                break
+
+            file_path_to_process = None
+            item_descriptor_for_log = "未知項目"
+
+            if isinstance(queue_item, str): # 直接是路徑
+                file_path_to_process = queue_item
+                item_descriptor_for_log = os.path.basename(file_path_to_process)
+            elif isinstance(queue_item, dict) and 'path' in queue_item: # 字典格式
+                file_path_to_process = queue_item['path']
+                item_descriptor_for_log = queue_item.get('source_url', os.path.basename(file_path_to_process))
+            else:
+                logger.warning(f"佇列中收到未知格式項目: {queue_item}，跳過。")
+                continue
+
+            if not os.path.exists(file_path_to_process):
+                logger.warning(f"佇列提供的檔案路徑不存在: {file_path_to_process}，跳過。")
+                continue
+
+            # 調用核心處理函式
+            result = process_single_file_entry(
+                file_path=file_path_to_process,
+                descriptor=item_descriptor_for_log,
+                db_conn=db_conn,
+                format_map=format_map, # 傳遞整個字典的引用
+                hw_manager=hw_manager
+                # processing_temp_dir # 如果 process_single_file_entry 需要解壓到特定位置
+            )
+
+            total_files_processed += 1
+            if result.get('status') == 'success':
+                total_rows_accumulated += result.get('rows_added', 0)
+            if result.get('map_updated_internally', False): # 檢查 format_map 是否在 process_single_file_entry 中被修改
+                format_map_changed_during_run = True
+
+            # 檔案處理完畢後可以考慮是否刪除本地原始檔 (如果它是從downloader的暫存區來的)
+            # 這取決於協調器的策略，pipeline worker 不應自行決定刪除佇列中的原始檔
+            # if file_path_to_process.startswith(downloader_local_temp_area):
+            #    try: os.remove(file_path_to_process) except OSError: pass
 
 
-    if not jobs_to_process:
-        logger.warning("掃描後，沒有找到任何有效且可處理的檔案。請檢查輸入檔案或格式地圖。")
-        # 即使沒有任務，如果 format_map 更新了，也應該返回 True
-        if format_map_updated_in_session:
-            try:
-                with open(format_map_path, 'w', encoding='utf-8') as f_map_save:
-                    json.dump(format_map, f_map_save, indent=4, ensure_ascii=False)
-                logger.info(f"格式地圖已更新並儲存至 {format_map_path} (即使沒有處理任務)。")
-            except Exception as e_map_save_empty:
-                logger.error(f"儲存更新後的格式地圖 (空任務) 至 {format_map_path} 時失敗: {e_map_save_empty}")
-        return format_map_updated_in_session, 0, 0, 0, (len(all_files_discovered) - len(jobs_to_process))
+        except queue.Empty: # queue.Empty 是 queue 模組的例外
+            logger.info("佇列在超時時間內為空，繼續等待...")
+            # 這裡可以加入一個計數器，如果連續多次為空，可能意味著上游已結束但未發送哨兵
+            # 不過，正常的停止依賴於哨兵值
+            continue
+        except Exception as e_queue_loop:
+            logger.error(f"處理佇列時發生未預期錯誤: {e_queue_loop}")
+            # 決定是否要中斷整個 worker，或只是記錄錯誤並繼續
+            # 暫時選擇繼續，除非是嚴重到無法操作DB的錯誤
+            # time.sleep(1) # 避免快速連續失敗
 
-    logger.success(f"工作清單建立完畢，共 {len(jobs_to_process)} 個有效檔案待處理。")
-    logger.section(f"啟動 {hw_manager.max_workers} 個工人進程，開始並行處理...")
+    # 循環結束後
+    logger.info(f"佇列處理完畢。共處理 {total_files_processed} 個檔案條目，嘗試加入約 {total_rows_accumulated} 筆記錄。")
 
-    # 初始化統計數據
-    stats = {'success': 0, 'skipped_empty_or_parse_fail': 0, 'skipped_no_pipeline':0, 'skipped_empty_after_clean':0, 'error': 0, 'rows': 0}
-
-    processed_job_count = 0
-    with concurrent.futures.ProcessPoolExecutor(max_workers=hw_manager.max_workers) as executor:
-        future_to_job_desc = {executor.submit(worker_process_file, job_args): job_args[0] for job_args in jobs_to_process}
-
-        for future in concurrent.futures.as_completed(future_to_job_desc):
-            job_descriptor = future_to_job_desc[future]
-            processed_job_count += 1
-            logger.info(f"--- [進度 {processed_job_count}/{len(jobs_to_process)}] '{job_descriptor[:70]}...' ---")
-            try:
-                result = future.result()
-                status_category = result.get('status', 'error') # 預設為 error
-
-                if status_category == 'success':
-                    stats['success'] += 1
-                    stats['rows'] += result.get('rows_processed', 0)
-                    logger.success(f"  ↳ 處理成功 ({result.get('pipeline', 'N/A')})，暫存 {result.get('rows_processed', 0):,} 筆記錄到 {os.path.basename(result.get('staged_file', 'N/A'))}。")
-                elif status_category.startswith('skipped'):
-                    stats[status_category] = stats.get(status_category, 0) + 1
-                    logger.info(f"  ↳ 跳過處理: {result.get('message', '未知原因')}")
-                else: # error
-                    stats['error'] += 1
-                    logger.error(f"  ↳ 處理失敗: {result.get('message', '未知錯誤')}")
-
-            except Exception as exc: # Future 本身可能拋出例外 (例如 worker process 崩潰)
-                stats['error'] += 1
-                logger.error(f"處理任務 '{job_descriptor}' 時，Future 產生嚴重例外: {exc}") # 移除 exc_info=True
-
-    logger.success(f"階段一所有檔案處理完畢。")
-    total_skipped = stats['skipped_empty_or_parse_fail'] + stats['skipped_no_pipeline'] + stats['skipped_empty_after_clean']
-
-    # 儲存更新後的 format_map
-    if format_map_updated_in_session:
+    if format_map_changed_during_run: # 只有在運行中確實修改了才儲存
         try:
             with open(format_map_path, 'w', encoding='utf-8') as f_map_save:
                 json.dump(format_map, f_map_save, indent=4, ensure_ascii=False)
             logger.info(f"格式地圖已更新並儲存至 {format_map_path}")
-        except Exception as e_map_save:
-            logger.error(f"儲存更新後的格式地圖至 {format_map_path} 時失敗: {e_map_save}")
+        except Exception as e_map_save_final:
+            logger.error(f"儲存最終格式地圖至 {format_map_path} 時失敗: {e_map_save_final}")
 
-    return format_map_updated_in_session, stats['rows'], stats['success'], stats['error'], total_skipped
-
-
-def run_duckdb_loading_stage(db_file_path: str, staging_dir: str, hw_manager: HardwareManager, db_temp_dir: str) -> int:
-    logger.header("階段二: 從本地暫存區高速載入至 DuckDB")
-
-    if not os.path.exists(db_temp_dir):
-        os.makedirs(db_temp_dir, exist_ok=True)
-        logger.info(f"DuckDB 臨時目錄已建立: {db_temp_dir}")
-
-    try:
-        # 連接資料庫，如果不存在則會建立
-        conn = duckdb.connect(database=db_file_path, read_only=False)
-        logger.success(f"成功連接至 DuckDB 資料庫: {db_file_path}")
-
-        # 設定 DuckDB 環境參數
-        conn.execute(f"SET memory_limit = '{hw_manager.memory_limit_gb}GB';")
-        conn.execute(f"SET threads = {hw_manager.max_workers};")
-        conn.execute(f"SET temp_directory = '{db_temp_dir}';") # 設定臨時目錄
-        logger.info(f"DuckDB 環境設定完畢 (Memory: {hw_manager.memory_limit_gb}GB, Threads: {hw_manager.max_workers}, TempDir: {db_temp_dir})")
-
-        # 建立序列和表格 (如果不存在)
-        for seq_sql in SEQUENCES.values(): conn.execute(seq_sql)
-        for table_sql in TABLE_DEFINITIONS.values(): conn.execute(table_sql)
-        logger.info("所有資料庫表格與序列 (SEQUENCE) 已確認或建立。")
-
-    except Exception as e_db_init:
-        logger.error(f"資料庫初始化或連接失敗 ({db_file_path}): {e_db_init}")
-        return 0 # 返回0表示沒有記錄被加入
-
-    # 查找所有在 staging 區的 Parquet 檔案
-    all_staged_parquet_files = [os.path.join(staging_dir, f) for f in os.listdir(staging_dir) if f.endswith('.parquet')]
-    if not all_staged_parquet_files:
-        logger.warning(f"本地暫存區 {staging_dir} 中沒有找到任何 .parquet 檔案，無需載入。")
-        conn.close()
-        return 0
-
-    logger.info(f"在暫存區發現 {len(all_staged_parquet_files)} 個 Parquet 檔案準備載入。")
-
-    # 按目標表格名稱分組 Parquet 檔案
-    files_by_target_table = {}
-    for parquet_file_path in all_staged_parquet_files:
-        # 檔名格式預期為: {pipeline_name}_{file_hash}.parquet
-        # pipeline_name 即為目標表格名稱
-        # 問題3修正: .split('_', 1)[0] -> .rsplit('_', 1)[0]
-        target_table_name = os.path.basename(parquet_file_path).rsplit('_', 1)[0]
-        if target_table_name not in files_by_target_table:
-            files_by_target_table[target_table_name] = []
-        files_by_target_table[target_table_name].append(parquet_file_path)
-
-    total_rows_added_to_db = 0
-    for table_name, list_of_parquet_files in files_by_target_table.items():
-        if table_name not in TABLE_DEFINITIONS:
-            logger.warning(f"從 Parquet 檔名解析出的目標表格 '{table_name}' 不在預定義的表格 ({list(TABLE_DEFINITIONS.keys())}) 中，將跳過這些檔案: {list_of_parquet_files}")
-            continue
-
-        logger.section(f"正在載入資料至 '{table_name}' 表格 (來源檔案數: {len(list_of_parquet_files)})")
+    if db_conn:
         try:
-            # 1. (可選) 移除唯一索引以加速大量插入，完成後再重建
-            #    對於 DuckDB，ON CONFLICT DO NOTHING 通常也很快，但可以測試比較
-            unique_index_name = f"idx_{table_name}_unique" # 假設索引命名規則
-            if UNIQUE_INDICES.get(table_name): # 檢查是否有定義唯一索引
-                try:
-                    conn.execute(f"DROP INDEX IF EXISTS {unique_index_name};")
-                    logger.info(f"  ↳ 已暫時移除索引 '{unique_index_name}' (如果存在)。")
-                except Exception as e_drop_idx:
-                    logger.warning(f"  ↳ 移除索引 '{unique_index_name}' 時發生非致命錯誤: {e_drop_idx} (可能索引不存在)")
+            # 在關閉前確保所有索引都已建立 (如果之前是延後建立)
+            for table_name_idx, idx_sql in UNIQUE_INDICES.items():
+                if table_name_idx in TABLE_DEFINITIONS: # 只為存在的表建立索引
+                    try:
+                        db_conn.execute(idx_sql)
+                        logger.info(f"已在 '{table_name_idx}' 上確認/重建最終唯一性索引。")
+                    except Exception as e_final_idx:
+                         logger.warning(f"在 '{table_name_idx}' 上建立最終唯一索引時發生警告/錯誤: {e_final_idx} (可能已存在或表結構問題)")
+            db_conn.close()
+            logger.success(f"DuckDB 連線已關閉: {db_file_path}")
+        except Exception as e_db_close:
+            logger.error(f"關閉 DuckDB 連線 ({db_file_path}) 時發生錯誤: {e_db_close}")
+
+    logger.header("TAIFEX 數據精煉廠 v18.0 (佇列模式) 執行完畢")
 
 
-            # 2. 將 Parquet 檔案載入到一個臨時 staging 表格
-            #    使用 union_by_name=True 來處理可能的 schema 差異 (雖然理想情況下應該一致)
-            #    使用 glob 模式讀取多個檔案
-            parquet_files_glob_pattern = [f.replace("\\","/") for f in list_of_parquet_files] # DuckDB 需要正斜線
-
-            conn.execute(f"CREATE OR REPLACE TEMP TABLE temp_staging_for_{table_name} AS SELECT * FROM read_parquet({parquet_files_glob_pattern}, union_by_name=True);")
-
-            initial_count_in_temp = conn.execute(f"SELECT COUNT(*) FROM temp_staging_for_{table_name}").fetchone()[0]
-            if initial_count_in_temp == 0:
-                logger.info(f"  ↳ 臨時表 temp_staging_for_{table_name} 為空，跳過此表格的後續載入。")
-                continue
-            logger.success(f"  ↳ 已將 {len(list_of_parquet_files)} 個 Parquet 檔案 ({initial_count_in_temp:,} 筆記錄) 載入至臨時表 temp_staging_for_{table_name}。")
-
-            # 3. 從臨時表去重並插入到目標表
-            #    使用 ON CONFLICT DO NOTHING (基於唯一索引)
-            #    或者，如果沒有預先移除索引，也可以先插入到另一個帶有 ROW_NUMBER() 的去重臨時表，再插入目標表
-
-            # 獲取目標表和臨時表的欄位定義，以確保只插入共同存在的欄位 (除了id)
-            target_table_cols_desc = conn.execute(f"DESCRIBE {table_name};").fetchall()
-            temp_table_cols_desc = conn.execute(f"DESCRIBE temp_staging_for_{table_name};").fetchall()
-
-            target_cols_set = {col_info[0] for col_info in target_table_cols_desc if col_info[0] != 'id'} # 不含 id
-            temp_cols_set = {col_info[0] for col_info in temp_table_cols_desc}
-
-            common_cols_for_insert = list(target_cols_set.intersection(temp_cols_set))
-            if not common_cols_for_insert:
-                logger.warning(f"  ↳ 表格 '{table_name}' 與其臨時表之間沒有共同欄位 (除了id)，無法插入數據。")
-                continue
-
-            common_cols_str = ", ".join([f'"{c}"' for c in common_cols_for_insert]) # 加引號以處理特殊字元/大小寫
-
-            # 核心修正: 預先去重 (來自 Colab v8.0)
-            # 這裡需要 UNIQUE_INDICES[table_name] 中的欄位列表
-            unique_constraint_cols_str = ""
-            if table_name in UNIQUE_INDICES:
-                match = re.search(r'\((.*?)\)', UNIQUE_INDICES[table_name])
-                if match:
-                    unique_constraint_cols_str = match.group(1)
-
-            if not unique_constraint_cols_str:
-                logger.warning(f"  ↳ 表格 '{table_name}' 未定義唯一約束欄位，將不進行預先去重，直接嘗試插入。")
-                # 如果沒有唯一約束欄位，直接從 temp_staging 插入，依賴 ON CONFLICT
-                # 但 ON CONFLICT 需要主鍵或唯一約束，這裡的 'id' 是主鍵，但不是業務邏輯上的唯一性
-                # 這種情況下，如果沒有其他唯一索引，可能會插入重複數據 (除了id不同)
-                # 為了安全，如果沒有明確的業務唯一鍵，我們應該只做簡單插入，或者報錯
-                # 暫時假設所有表都有合理的唯一性定義，或者 'id' 的序列能處理
-                # 如果要嚴格去重，這裡需要一個 fallback 策略或報錯
-                # 這裡先簡化：如果沒有 UNIQUE_INDICES，則不進行 ROW_NUMBER() 去重
-                insert_from_table = f"temp_staging_for_{table_name}"
-            else:
-                # 進行 ROW_NUMBER() 去重
-                dedup_temp_table_name = f"temp_deduped_for_{table_name}"
-                dedup_sql = f"""
-                    CREATE OR REPLACE TEMP TABLE {dedup_temp_table_name} AS
-                    SELECT * FROM (
-                        SELECT *, ROW_NUMBER() OVER (PARTITION BY {unique_constraint_cols_str} ORDER BY source DESC NULLS LAST) as rn
-                        FROM temp_staging_for_{table_name}
-                    ) WHERE rn = 1;
-                """ # ORDER BY source DESC NULLS LAST 讓有 source 的優先，且 NULL source 排後面
-                conn.execute(dedup_sql)
-                insert_from_table = dedup_temp_table_name
-
-                deduped_count = conn.execute(f"SELECT COUNT(*) FROM {insert_from_table}").fetchone()[0]
-                logger.info(f"  ↳ 在臨時表中基於 ({unique_constraint_cols_str}) 去重完成，剩餘 {deduped_count:,} 筆唯一記錄。")
-                if deduped_count == 0:
-                    logger.info(f"  ↳ 去重後記錄為0，跳過插入。")
-                    if UNIQUE_INDICES.get(table_name): # 重建索引
-                        conn.execute(UNIQUE_INDICES[table_name])
-                    continue
-
-
-            # 插入數據，使用 ON CONFLICT DO NOTHING
-            # 這裡的 id 由序列產生，其他共同欄位從臨時表選取
-            insert_sql = f"""
-            INSERT INTO {table_name} (id, {common_cols_str})
-            SELECT nextval('seq_{table_name}'), {common_cols_str}
-            FROM {insert_from_table}
-            ON CONFLICT (id) DO NOTHING;
-            """
-            # 如果要基於業務鍵的衝突處理 (例如 UNIQUE_INDICES 中的欄位)
-            # 則需要 ON CONFLICT (col1, col2) DO UPDATE SET ... 或 DO NOTHING
-            # 但由於我們已經做了預先去重，理論上不應該有業務鍵衝突，除非是與DB中已有的數據衝突
-            # 如果要處理與DB中已有數據的業務鍵衝突，則 UNIQUE_INDICES 需要先建立
-            # 這裡先假設 UNIQUE_INDICES 主要用於最終的數據完整性保證，插入時依賴預先去重
-
-            # 為了處理與資料庫中已存在數據的衝突 (基於業務唯一鍵)
-            # 我們需要在插入前確保唯一索引存在，然後使用 ON CONFLICT (業務鍵) DO NOTHING
-            if UNIQUE_INDICES.get(table_name):
-                try:
-                    conn.execute(UNIQUE_INDICES[table_name]) # 先嘗試建立索引
-                    logger.info(f"  ↳ 已在 '{table_name}' 上確認/建立唯一性索引。")
-
-                    # 使用業務鍵進行 ON CONFLICT
-                    conflict_target_cols = re.search(r'\((.*?)\)', UNIQUE_INDICES[table_name]).group(1)
-                    insert_sql_with_biz_conflict = f"""
-                    INSERT INTO {table_name} (id, {common_cols_str})
-                    SELECT nextval('seq_{table_name}'), {common_cols_str}
-                    FROM {insert_from_table}
-                    ON CONFLICT ({conflict_target_cols}) DO NOTHING;
-                    """
-                    conn.execute(insert_sql_with_biz_conflict)
-                    logger.info(f"  ↳ 已執行基於業務鍵 ({conflict_target_cols}) 的去重插入操作。")
-
-                except Exception as e_create_idx_early:
-                    logger.warning(f"  ↳ 嘗試在插入前建立唯一索引 '{UNIQUE_INDICES[table_name]}' 失敗: {e_create_idx_early}。將使用基於ID的衝突處理。")
-                    conn.execute(insert_sql) # 回退到基於 ID 的衝突處理
-                    logger.info(f"  ↳ 已執行基於ID的衝突插入操作。")
-            else: # 沒有定義唯一業務索引
-                conn.execute(insert_sql)
-                logger.info(f"  ↳ 已執行基於ID的衝突插入操作 (無業務唯一索引定義)。")
-
-
-            # 獲取實際插入的行數 (這比較 tricky，DuckDB 的 INSERT ... ON CONFLICT 不直接返回影響行數)
-            # 可以通過比較前後行數，但如果表很大，這可能較慢
-            # 這裡我們用去重後的數量作為一個近似值
-            rows_in_final_table_after = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-            # logger.info(f"  ↳ 表格 '{table_name}' 目前總行數: {rows_in_final_table_after:,}")
-            # 實際增加的行數可以用 deduped_count (如果進行了去重) 或 initial_count_in_temp (如果未去重)
-            # 但這不完全準確，因為 ON CONFLICT DO NOTHING 的影響
-            # 這裡我們只記錄一個大概的 "新加入或更新" 的概念性數字
-            # 為了簡化，我們使用去重後的數量 (如果進行了去重)
-            current_op_rows = conn.execute(f"SELECT COUNT(*) FROM {insert_from_table}").fetchone()[0]
-            total_rows_added_to_db += current_op_rows # 累加的是嘗試插入的唯一記錄數
-            logger.success(f"  ↳ 向 '{table_name}' 表格嘗試加入 {current_op_rows:,} 筆唯一記錄。")
-
-            # 4. (如果之前移除了) 重建唯一索引
-            if UNIQUE_INDICES.get(table_name): # 再次確保索引存在
-                try:
-                    conn.execute(UNIQUE_INDICES[table_name])
-                    logger.success(f"  ↳ 已在 '{table_name}' 上成功確認/重建唯一性索引。")
-                except Exception as e_rebuild_idx:
-                    logger.error(f"  ↳ 在 '{table_name}' 上重建唯一索引時發生錯誤: {e_rebuild_idx}")
-
-            # 清理臨時表
-            conn.execute(f"DROP TABLE IF EXISTS temp_staging_for_{table_name};")
-            if unique_constraint_cols_str : # 如果創建了去重表
-                conn.execute(f"DROP TABLE IF EXISTS {dedup_temp_table_name};")
-
-
-        except Exception as e_load_table:
-            logger.error(f"  ↳ 載入資料至 '{table_name}' 時發生嚴重錯誤: {e_load_table}") # 移除 exc_info=True
-
-    conn.close()
-    logger.success(f"資料庫操作完成並已關閉連線。總共嘗試加入約 {total_rows_added_to_db:,} 筆唯一記錄至各表格。")
-    return total_rows_added_to_db
-
-
-# ==============================================================================
-# 主執行函數
-# ==============================================================================
-def main():
-    parser = argparse.ArgumentParser(description="TAIFEX 數據精煉廠：執行 ETL 作業，將原始數據載入 DuckDB。")
-    parser.add_argument("--input-dir", required=True, help="包含原始數據檔案的輸入目錄路徑。")
+def main(): # main 現在主要用於獨立測試或作為一個可被協調器調用的入口點的包裝
+    parser = argparse.ArgumentParser(description="TAIFEX 數據精煉廠 v18.0 (佇列驅動測試模式)。")
+    # parser.add_argument("--input-dir", required=True, help="包含原始數據檔案的輸入目錄路徑。") # 已移除
     parser.add_argument("--db-output-dir", required=True, help="DuckDB 資料庫檔案及格式地圖的輸出目錄路徑。")
-    parser.add_argument("--db-name", default="taifex_pipeline_analytics.duckdb", help="DuckDB 資料庫的檔案名稱 (預設: taifex_pipeline_analytics.duckdb)。")
-    parser.add_argument("--temp-dir", default=None, help="DuckDB 及處理過程的臨時檔案目錄 (預設: 在 db-output-dir 下建立 'temp_pipeline_work')。")
-    parser.add_argument("--max-workers", type=int, default=None, help="並行處理核心數 (預設: CPU核心數 * 0.8)。")
-    parser.add_argument("--memory-limit-gb", type=int, default=None, help="DuckDB 記憶體預算 (GB) (預設: 系統記憶體 * 0.5)。")
+    parser.add_argument("--db-name", default="taifex_pipeline_analytics_q.duckdb", help="DuckDB 資料庫的檔案名稱 (預設: taifex_pipeline_analytics_q.duckdb)。")
+    parser.add_argument("--processing-temp-dir", default=None, help="處理過程的臨時檔案目錄 (預設: 在 db-output-dir 下建立 'temp_pipeline_proc')。")
+    parser.add_argument("--test-file-path", default=None, help="[測試用] 單個或多個 (逗號分隔) 檔案路徑，用於填充測試佇列。")
+
+    # 硬體相關參數，傳遞給 hw_settings
+    parser.add_argument("--max-workers", type=int, default=None, help="並行處理核心數 (預設: CPU核心數 * 0.8) - 主要影響 hw_manager 日誌，實際並行由協調器控制。")
+    parser.add_argument("--memory-limit-gb", type=int, default=None, help="DuckDB 記憶體預算 (GB) (預設: 系統記憶體 * 0.5) - 主要影響 hw_manager 日誌。")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="日誌級別 (預設: INFO)。")
 
     args = parser.parse_args()
 
-    # 設定日誌級別
     global logger
     logger = SimpleLogger(log_level=args.log_level)
 
-    logger.header("TAIFEX 數據精煉廠 v1.0 啟動")
-
-    # 設定路徑
-    input_dir = os.path.abspath(args.input_dir)
     db_output_dir = os.path.abspath(args.db_output_dir)
-    db_file_name = args.db_name
-    db_file_full_path = os.path.join(db_output_dir, db_file_name)
-    format_map_full_path = os.path.join(db_output_dir, FORMAT_MAP_FILENAME) # 格式地圖與 DB 同目錄
+    db_file_full_path = os.path.join(db_output_dir, args.db_name)
+    format_map_full_path = os.path.join(db_output_dir, FORMAT_MAP_FILENAME)
 
-    if args.temp_dir:
-        temp_work_dir = os.path.abspath(args.temp_dir)
+    if args.processing_temp_dir:
+        processing_temp_dir = os.path.abspath(args.processing_temp_dir)
     else:
-        temp_work_dir = os.path.join(db_output_dir, "temp_pipeline_work")
+        processing_temp_dir = os.path.join(db_output_dir, "temp_pipeline_proc") # 改名以區分
 
-    local_staging_path = os.path.join(temp_work_dir, "staging_parquet") # Parquet 檔案的中間儲存區
-    duckdb_temp_path_for_db = os.path.join(temp_work_dir, "duckdb_temp_files") # DuckDB 自身的臨時檔案
+    hw_settings_dict = {
+        "max_workers": args.max_workers,
+        "memory_limit_gb": args.memory_limit_gb
+    }
 
-    # 建立必要的目錄
-    os.makedirs(db_output_dir, exist_ok=True)
-    os.makedirs(temp_work_dir, exist_ok=True)
-    os.makedirs(local_staging_path, exist_ok=True)
-    os.makedirs(duckdb_temp_path_for_db, exist_ok=True)
+    # --- 模擬佇列和協調器行為進行測試 ---
+    import queue # 使用標準佇列進行單進程測試
+    test_q = queue.Queue()
 
-    logger.info(f"輸入目錄: {input_dir}")
-    logger.info(f"資料庫輸出目錄: {db_output_dir}")
-    logger.info(f"資料庫檔案: {db_file_full_path}")
-    logger.info(f"格式地圖檔案: {format_map_full_path}")
-    logger.info(f"工作臨時目錄: {temp_work_dir}")
-    logger.info(f"  ↳ Parquet 暫存區: {local_staging_path}")
-    logger.info(f"  ↳ DuckDB 臨時檔案區: {duckdb_temp_path_for_db}")
+    if args.test_file_path:
+        paths_to_test = args.test_file_path.split(',')
+        for p_test in paths_to_test:
+            p_test_abs = os.path.abspath(p_test.strip())
+            if os.path.exists(p_test_abs):
+                # 放入佇列的項目可以是簡單的路徑，或更結構化的字典
+                # 這裡用字典模擬 downloader 可能放入的格式
+                test_q.put({'type': 'file', 'path': p_test_abs, 'source_url': f'local_test_file:{os.path.basename(p_test_abs)}'})
+                logger.info(f"已將測試檔案 {p_test_abs} 加入佇列。")
+            else:
+                logger.warning(f"提供的測試檔案路徑不存在: {p_test_abs}")
+    else:
+        logger.info("未提供 --test-file-path，佇列為空。僅測試初始化和空佇列處理。")
 
+    stop_signal = "STOP_PIPELINE_PROCESSING_PLEASE" # 哨兵值
+    test_q.put(stop_signal) # 加入哨兵值
 
-    hw_manager = HardwareManager(user_max_workers=args.max_workers, user_memory_limit_gb=args.memory_limit_gb)
-    hw_manager.display_initial_dashboard()
+    run_pipeline_from_queue(
+        task_queue=test_q,
+        db_file_path=db_file_full_path,
+        format_map_path=format_map_full_path,
+        processing_temp_dir=processing_temp_dir,
+        hw_settings=hw_settings_dict,
+        stop_sentinel=stop_signal
+    )
 
-    start_time_total = time.time()
+    logger.info("獨立測試模式執行完畢。")
 
-    try:
-        # 階段一：解析與暫存
-        map_updated, rows_staged, success_files, error_files, skipped_files = run_parsing_stage(
-            input_dir=input_dir,
-            staging_dir=local_staging_path,
-            format_map_path=format_map_full_path,
-            hw_manager=hw_manager
-        )
-        logger.header(f"✅ 階段一執行完畢 ✅")
-        logger.success(f"總結: 成功 {success_files} 個檔案，失敗 {error_files} 個，跳過 {skipped_files} 個。")
-        logger.success(f"共 {rows_staged:,} 筆數據記錄被成功解析並寫入 Parquet 暫存區。")
-        if map_updated:
-            logger.info("格式地圖已在本輪執行中更新。")
-
-        # 階段二：載入至 DuckDB
-        if success_files > 0 or rows_staged > 0 : # 只有在有東西可以載入時才執行
-            rows_added_db = run_duckdb_loading_stage(
-                db_file_path=db_file_full_path,
-                staging_dir=local_staging_path,
-                hw_manager=hw_manager,
-                db_temp_dir=duckdb_temp_path_for_db
-            )
-            logger.header(f"🎉 階段二執行完畢 🎉")
-            logger.success(f"總結: 資料庫共嘗試加入約 {rows_added_db:,} 筆唯一數據記錄。")
-        else:
-            logger.info("階段一未產生可供載入的數據，跳過階段二。")
-            rows_added_db = 0
-
-
-        # (可選) 清理 staging_parquet 目錄，因為數據已載入 DuckDB
-        # 如果希望保留 Parquet 檔案以供其他用途，則不要清理
-        # logger.info(f"正在清理 Parquet 暫存區: {local_staging_path}")
-        # shutil.rmtree(local_staging_path) # 注意：這會刪除所有 parquet 檔案
-        # os.makedirs(local_staging_path, exist_ok=True) # 重新建立空目錄
-
-    except Exception as e_main:
-        logger.error(f"主流程發生未預期的嚴重錯誤: {e_main}") # 移除 exc_info=True
-    finally:
-        end_time_total = time.time()
-        total_duration_seconds = end_time_total - start_time_total
-        logger.header(f"🏁 精煉廠全部流程執行完畢 (總耗時: {total_duration_seconds:.2f} 秒) 🏁")
-        logger.info(f"最終資料庫檔案位於: {db_file_full_path}")
-        logger.info(f"最終格式地圖位於: {format_map_full_path}")
-
-        # 提示：如果需要在 Colab 或類似環境下載結果，使用者需要手動處理
-        # 例如，使用 files.download(db_file_full_path)
 
 if __name__ == "__main__":
     main()
