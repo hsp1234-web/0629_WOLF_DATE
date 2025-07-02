@@ -227,20 +227,97 @@ def pipeline_daily_ohlc(df: pd.DataFrame, source: str) -> pd.DataFrame:
     return df.dropna(subset=['trading_date','product_id','close'])
 
 def pipeline_tick_data(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    logger.debug(f"[{source}] Entering pipeline_tick_data. RAW df.head():\n{df.head().to_string()}")
+    logger.debug(f"[{source}] RAW df.columns: {df.columns.tolist()}")
+    logger.debug(f"[{source}] RAW df.dtypes:\n{df.dtypes}")
+
     # Hotfix applied for "成交數量(B+S)"
     map_ = {
-        '成交日期':'trade_date','商品代號':'product_id','到期月份_週別':'expiry_month',
-        '履約價':'strike_price','買賣權':'option_type','成交時間':'trade_time',
-        '成交價格':'price',
-        '成交數量_買賣別_':'volume_with_side',
-        '成交數量_b_or_s_':'volume_with_side',
-        '成交數量_bpluss_': 'volume', # 修正: (B+S) -> _bpluss_
-        '成交數量':'volume'
+        '成交日期': 'trade_date',
+        '商品代號': 'product_id',
+        '到期月份週別': 'expiry_month',  # 修正鍵名以匹配 _clean_and_prepare_df 的輸出
+        '履約價': 'strike_price',
+        '買賣權': 'option_type',
+        '成交時間': 'trade_time',
+        '成交價格': 'price',
+        '成交數量_買賣別_': 'volume_with_side', # 清理後會變 '成交數量_買賣別_'
+        '成交數量_b_or_s_': 'volume_with_side', # 清理後會變 '成交數量_b_or_s_'
+        '成交數量bpluss': 'volume',      # 修正鍵名以匹配 _clean_and_prepare_df 的輸出 for (B+S)
+        '成交數量': 'volume'
     }
-    df = _clean_and_prepare_df(df, ['trade_date','trade_time','price','volume'], map_)
-    try: df['trade_datetime'] = pd.to_datetime(df['trade_date'].astype(str)+' '+df['trade_time'].astype(str), format='%Y%m%d %H:%M:%S.%f', errors='coerce')
-    except ValueError: df['trade_datetime'] = pd.to_datetime(df['trade_date'].astype(str)+' '+df['trade_time'].astype(str), format='%Y%m%d %H:%M:%S', errors='coerce')
-    df['trade_datetime'] = df['trade_datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
+    # '到期月份_週別' 經過 _clean_and_prepare_df 會變成 '到期月份_週別_' (如果 lower() 不影響中文)
+    # 但日誌顯示是 '到期月份週別'，這意味著 '(' 和 ')' 之間的 '週別' 也被處理了，或者 lower() 的影響
+    # _clean_and_prepare_df: str(col).strip().lower().replace(' ', '_').replace('(', '').replace(')', '')
+    # '到期月份(週別)' -> '到期月份週別' (小寫化 '週別' 如果適用)
+    # 測試樣本的列名是 '到期月份(週別)'
+    # 經過 _clean_and_prepare_df 清理:
+    # str('到期月份(週別)').strip().lower().replace('(', '').replace(')', '')
+    # '到期月份(週別)'.lower() -> '到期月份(週別)' (假設中文不變)
+    # '到期月份(週別)'.replace('(', '') -> '到期月份週別)'
+    # '到期月份週別)'.replace(')', '') -> '到期月份週別'
+    # 所以 map_ 中的鍵 '到期月份週別' 是正確的。
+
+    df = _clean_and_prepare_df(df, ['trade_date','trade_time','price','volume', 'product_id', 'expiry_month', 'strike_price', 'option_type'], map_)
+
+    logger.debug(f"[{source}] df.head() AFTER _clean_and_prepare_df:\n{df.head().to_string()}")
+    logger.debug(f"[{source}] df.columns AFTER _clean_and_prepare_df: {df.columns.tolist()}")
+    logger.debug(f"[{source}] df.dtypes AFTER _clean_and_prepare_df:\n{df.dtypes}")
+
+    if 'trade_date' in df.columns and 'trade_time' in df.columns:
+        logger.debug(f"[{source}] df[['trade_date', 'trade_time']].head() BEFORE datetime conversion:\n{df[['trade_date', 'trade_time']].head().to_string()}")
+    else:
+        logger.warning(f"[{source}] 'trade_date' or 'trade_time' missing AFTER _clean_and_prepare_df.")
+
+    # Check if essential date/time columns exist and are not all NaN before attempting conversion
+    if 'trade_date' in df.columns and 'trade_time' in df.columns:
+        # Ensure columns are not all None/NaN which would make them object type or float if mixed
+        is_trade_date_valid = not df['trade_date'].isnull().all()
+        is_trade_time_valid = not df['trade_time'].isnull().all()
+
+        if not is_trade_date_valid or not is_trade_time_valid:
+            logger.warning(f"[{source}] 'trade_date' or 'trade_time' column is all NaN or missing before datetime conversion. Setting 'trade_datetime' to NaT.")
+            df['trade_datetime'] = pd.NaT
+        else:
+            # Attempt conversion
+            df['trade_date'] = df['trade_date'].astype(str).str.strip() # Add strip here
+            df['trade_date'] = df['trade_date'].astype(str).str.strip()
+            df['trade_time'] = df['trade_time'].astype(str).str.strip()
+            combined_datetime_str = df['trade_date'] + ' ' + df['trade_time']
+            # Let Pandas infer format, as it seems more robust for this case.
+            datetime_series = pd.to_datetime(combined_datetime_str, errors='coerce')
+
+            # Attempt with microseconds if primary fails (though sample data doesn't have microseconds)
+            # This logic might be overly complex if data is consistently without microseconds
+            # For now, let's assume the primary format is usually without microseconds for tick time.
+            # If specific files have microseconds, the recipe determination should ideally handle it.
+            # dt_format_ms = '%Y%m%d %H:%M:%S.%f'
+            # datetime_series_ms = pd.to_datetime(combined_datetime_str, format=dt_format_ms, errors='coerce')
+
+            # Use the series that has more valid dates (less NaTs)
+            # if datetime_series_ms.count() > datetime_series.count():
+            #    datetime_series = datetime_series_ms
+
+            df['trade_datetime'] = datetime_series
+
+            # Apply strftime only if there are non-NaT dates
+            if df['trade_datetime'].notnull().any():
+                try:
+                    df['trade_datetime_str'] = df['trade_datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
+                     # Replace original trade_datetime with its string representation if successful
+                    df['trade_datetime'] = df['trade_datetime_str']
+                    df.drop(columns=['trade_datetime_str'], inplace=True, errors='ignore') # clean up temp column
+                except AttributeError as e: # Handles cases like all NaT which might not have .dt accessor as expected
+                    logger.warning(f"[{source}] Could not apply strftime to 'trade_datetime', possibly all NaT or mixed types not allowing .dt: {e}")
+                    # Ensure 'trade_datetime' is object type and NaTs are pd.NaT for dropna
+                    df['trade_datetime'] = df['trade_datetime'].astype('object').replace(pd.NaT, None) # dropna handles None
+            else: # All values were NaT after to_datetime
+                df['trade_datetime'] = pd.NaT # Ensure it's pd.NaT
+    else:
+        logger.warning(f"[{source}] 'trade_date' or 'trade_time' not in DataFrame columns. 'trade_datetime' will be NaT.")
+        df['trade_datetime'] = pd.NaT
+
+    logger.debug(f"[{source}] df['trade_datetime'].head() after conversion and strftime attempt:\n{df['trade_datetime'].head()}")
+
     if 'option_type' in df.columns: df['option_type'] = df['option_type'].astype(str).str.strip().map({'C':'C','P':'P','買':'C','賣':'P'})
     if 'volume' not in df.columns and 'volume_with_side' in df.columns:
         # 確保提取的 volume 是字串，以便後續清理
@@ -255,22 +332,32 @@ def pipeline_tick_data(df: pd.DataFrame, source: str) -> pd.DataFrame:
     num_cols = ['strike_price','price','volume']
     for col in num_cols:
         if col in df.columns:
-            # 應用與 pipeline_daily_ohlc 類似的穩健轉換邏輯
-            # Tick 數據通常不含 '-' 代表 NaN，但為保持一致性與穩健性，可以保留 replace('-', '')
-            # 主要針對可能存在的千分位符號（儘管在 tick data 中不常見）和其他非數值字元
+            logger.debug(f"[{source}] Processing numeric column: {col}")
+            original_series_head = df[col].head().to_list()
             df[col] = df[col].astype(str).str.replace(',', '', regex=False).str.replace('-', '', regex=False)
-            # 移除任何非數字和小數點的字元，以處理像 'scl' 或其他髒數據
-            # 這個正則表達式會保留數字和小數點，移除其他所有字元
-            # 例如 "scl123.45abc" -> "123.45"
-            # 注意：如果原始設計是嚴格要求純數字，這個步驟可能過於寬鬆。
-            # 但根據任務要求「不計一切代價，將任何無法解析的髒數據（如 'scl'）安全地轉換為 NaN」，
-            # 以下的 pd.to_numeric(errors='coerce') 才是最終的防線。
-            # 此處的 replace 主要是為了輔助 to_numeric，例如 "123scl" -> "123"
-            # df[col] = df[col].astype(str).str.replace(r'[^\d\.]', '', regex=True) # 暫時註解此行，優先依賴 to_numeric errors='coerce'
-
+            cleaned_series_head = df[col].head().to_list()
             df[col] = pd.to_numeric(df[col], errors='coerce')
+            coerced_series_head = df[col].head().to_list()
+            logger.debug(f"[{source}] Col {col} | Original: {original_series_head} | Cleaned: {cleaned_series_head} | Coerced: {coerced_series_head}")
+        else:
+            logger.warning(f"[{source}] Numeric column {col} not found in DataFrame.")
 
-    df['source'] = source; return df.dropna(subset=['trade_datetime','product_id','price','volume'])
+    logger.debug(f"[{source}] df.head() after numeric conversion:\n{df.head().to_string()}")
+    logger.debug(f"[{source}] df.dtypes after numeric conversion:\n{df.dtypes}")
+
+    df_before_dropna = df.copy()
+    df_processed = df.dropna(subset=['trade_datetime','product_id','price','volume'])
+
+    if len(df_processed) == 0 and len(df_before_dropna) > 0:
+        logger.warning(f"[{source}] All rows were dropped by dropna. Price or Volume likely all NaN after coercion.")
+        logger.warning(f"[{source}] Price column before dropna (first 5):\n{df_before_dropna['price'].head()}")
+        logger.warning(f"[{source}] Volume column before dropna (first 5):\n{df_before_dropna['volume'].head()}")
+        logger.warning(f"[{source}] Product ID column before dropna (first 5):\n{df_before_dropna['product_id'].head()}")
+        logger.warning(f"[{source}] Trade Datetime column before dropna (first 5):\n{df_before_dropna['trade_datetime'].head()}")
+
+
+    df['source'] = source # This should be on df_processed
+    return df_processed # Return the processed (potentially smaller) dataframe
 
 def pipeline_institutional_investors(df: pd.DataFrame, source: str) -> pd.DataFrame:
     map_ = {'身份別':'investor_type','商品名稱':'product_name'}
@@ -327,7 +414,31 @@ def worker_process_file(args: Tuple[str, bytes, Dict, str, Any]) -> Dict[str, An
         #     return {'status':'error','descriptor':desc,'error_msg':"模擬的 worker 錯誤"}
 
         df = parse_with_recipe(bytes_data, recipe, desc)
-        if df is None or df.empty: return {'status':'skipped_parse_empty','descriptor':desc}
+
+        # Reverted: Removed the detailed TDD logging block from worker_process_file as the issue was in pipeline_tick_data
+        # Original TDD logging was:
+        # # --- More detailed DEBUG LOGGING for TDD ---
+        # logger.debug(f"[{desc}] Value of df after parse_with_recipe: type={type(df)}")
+        # if df is None:
+        #     logger.warning(f"[{desc}] parse_with_recipe returned None.")
+        # else:
+        #     try:
+        #         is_empty = df.empty
+        #         logger.debug(f"[{desc}] df.empty property: {is_empty}")
+        #         if not is_empty:
+        #             logger.debug(f"[{desc}] DataFrame AFTER parse_with_recipe. Columns: {df.columns.tolist()}")
+        #             logger.debug(f"[{desc}] DataFrame AFTER parse_with_recipe. Head:\n{df.head().to_string()}")
+        #             logger.debug(f"[{desc}] DataFrame AFTER parse_with_recipe. dtypes:\n{df.dtypes}")
+        #         else:
+        #             logger.warning(f"[{desc}] parse_with_recipe returned an empty DataFrame (df.empty is True). Columns: {df.columns.tolist()}")
+        #     except Exception as e_debug:
+        #         logger.error(f"[{desc}] Error accessing df properties after parse_with_recipe: {e_debug}")
+        # # --- END DEBUG LOGGING ---
+
+        if df is None or df.empty:
+            # logger.warning(f"[{desc}] Condition (df is None or df.empty) is TRUE. Returning skipped_parse_empty.") # Keep this log for clarity
+            return {'status':'skipped_parse_empty','descriptor':desc}
+
         p_name = recipe.get("pipeline","unknown"); p_func = PIPELINE_MAP.get(p_name)
         if not p_func: return {'status':'skipped_no_pipeline','descriptor':desc}
         df = p_func(df, desc)

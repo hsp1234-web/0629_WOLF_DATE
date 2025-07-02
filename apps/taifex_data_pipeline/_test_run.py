@@ -25,9 +25,17 @@ except Exception as e:
     pass
 # --- 路徑自我校正樣板碼結束 ---
 
+from apps.taifex_data_pipeline.run import SimpleLogger, determine_parsing_recipe, worker_process_file, HardwareManager
+
 class TestTaifexDataPipelineBatch(unittest.TestCase): # 更名以區分
 
     def setUp(self):
+        # 初始化測試專用的 logger
+        # 注意：這會覆蓋 run.py 中全域的 logger，僅在測試期間生效
+        global logger
+        self.logger = SimpleLogger(log_level="DEBUG")
+        logger = self.logger # 讓 run.py 中直接使用 logger 的部分能獲取到這個實例
+
         self.pipeline_run_py = os.path.join(current_pipeline_dir, "run.py")
         self.sample_zip_file_path = os.path.join(current_pipeline_dir, "sample_pipeline_data.zip")
 
@@ -102,5 +110,84 @@ class TestTaifexDataPipelineBatch(unittest.TestCase): # 更名以區分
         self.assertEqual(res_inst_sample_fut[0], 10000)
         con.close()
 
+    def test_process_file_with_scl_trigger_sample(self):
+        """
+        測試 pipeline_tick_data 是否能處理包含已知髒數據（類似導致 'scl' 的情況）的樣本。
+        預期：髒數據應被轉換為 NaN，並且如果影響到 dropna 的關鍵欄位，則該行被移除，
+              或者 worker_process_file 成功返回，相應欄位為 NaN。
+              整個過程不應拋出未處理的 'scl' 異常。
+        """
+        self.logger.info("--- 開始執行: test_process_file_with_scl_trigger_sample --- (QA)")
+        # from apps.taifex_data_pipeline.run import determine_parsing_recipe, worker_process_file, SimpleLogger, HardwareManager # 已在頂部導入
+
+        # 來自指令的 trigger_scl_error_sample.csv 內容
+        csv_content_str = """成交日期,商品代號,到期月份(週別),成交時間,成交價格,成交數量(B+S),開盤價,最高價,最低價,結算價,近月價格,遠月價格,委買價格,委賣價格,委買數量,委賣數量
+20250701,TX,202507,084500,18001,10,18000,18005,17999,18002,18001,18010,18000,18001,20,15
+20250701,TX,202507,084501,數據遺失,5,18002,18006,18001,18003,18001,18010,18001,18002,22,18
+20250701,TX,202507,084502,18005,---,18004,18008,18003,18005,18001,18010,18004,18005,19,13
+20250701,TX,202507,084503,18010,8,18009,18012,18008,18011,18001,18010,18009,18010,25,30
+"""
+        # hw_mgr 初始化，logger 已在 setUp 中設定並賦值給全域 logger
+        hw_mgr = HardwareManager(user_max_workers=1)
+
+
+        descriptor = "trigger_scl_error_sample.csv"
+        content_bytes = csv_content_str.encode('ms950') # 假設是 MS950 編碼
+
+        # 1. 確定解析配方
+        # 為了讓 determine_parsing_recipe 正確識別為 tick_data，我們需要確保 header 和內容符合其判斷邏輯
+        # Daily_*.csv 通常是動態表頭，包含 "成交日期", "商品代號", "成交價格", "成交時間"
+        # 指令中提供的樣本是CSV，所以應該是 csv_dynamic_header -> tick_data
+        recipe = determine_parsing_recipe(content_bytes, descriptor)
+        self.assertIsNotNone(recipe, "無法為樣本數據確定解析配方。")
+        self.assertEqual(recipe.get("pipeline"), "tick_data", f"樣本數據應被識別為 'tick_data' 管線，而非 '{recipe.get('pipeline')}'")
+        self.assertIn(recipe.get("parser"), ["csv_dynamic_header", "csv"], f"預期解析器為 csv_dynamic_header 或 csv，得到 {recipe.get('parser')}")
+
+
+        # 2. 執行 worker_process_file
+        # worker_process_file 需要一個 staging_path
+        staging_dir = os.path.join(self.base_temp_dir, "scl_test_staging")
+        os.makedirs(staging_dir, exist_ok=True)
+
+        result = worker_process_file((descriptor, content_bytes, recipe, staging_dir, hw_mgr))
+
+        self.logger.debug(f"worker_process_file 結果: {result}")
+
+        # 3. 驗證結果
+        # 預期：worker_process_file 應成功執行 (status: 'success')
+        # 因為 pipeline_tick_data 中的 errors='coerce' 會將 "數據遺失" 和 "---" 轉為 NaN
+        # 然後 dropna(subset=['trade_datetime','product_id','price','volume']) 會移除這些行
+        self.assertEqual(result.get("status"), "success",
+                         f"處理包含髒數據的樣本時，worker_process_file 未成功。錯誤: {result.get('error_msg')}")
+
+        # 由於第二行 price='數據遺失' -> NaN, 第三行 volume='---' -> NaN，這兩行都會被 dropna 移除
+        # 所以最終 parquet 檔案中應該只包含第一行和第四行數據
+        self.assertEqual(result.get("rows"), 2,
+                         f"預期處理後剩下 2 行數據，實際得到 {result.get('rows')} 行。檢查髒數據是否按預期被移除。")
+
+        # 可以進一步讀取 parquet 檔案驗證內容 (可選)
+        if result.get("status") == "success" and result.get("file"):
+            import pandas as pd
+            df_processed = pd.read_parquet(result.get("file"))
+            self.assertEqual(len(df_processed), 2, "Parquet 檔案中的行數與預期不符。")
+            # 檢查 price 和 volume 是否都是數值類型且不含 NaN (因為 NaN 的行已被移除)
+            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['price']))
+            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['volume']))
+            self.assertFalse(df_processed['price'].isnull().any())
+            self.assertFalse(df_processed['volume'].isnull().any())
+            self.logger.debug("Parquet 檔案內容驗證通過。")
+
+        self.logger.info("--- test_process_file_with_scl_trigger_sample 執行完畢 --- (QA)")
+
+
 if __name__ == "__main__":
-    unittest.main(argv=['first-arg-is-ignored'], exit=False)
+    # unittest.main(argv=['first-arg-is-ignored'], exit=False)
+    # 為了能在 Colab 或腳本中單獨運行和調試，可以這樣配置：
+    suite = unittest.TestSuite()
+    # suite.addTest(TestTaifexDataPipelineBatch('test_pipeline_batch_run')) # 如果需要運行舊測試
+    suite.addTest(TestTaifexDataPipelineBatch('test_process_file_with_scl_trigger_sample'))
+    runner = unittest.TextTestRunner()
+    runner.run(suite)
+
+# 之前的 log_message 和 _get_test_logger 輔助函式定義已移除
+# --- End of _test_run.py ---
