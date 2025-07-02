@@ -243,10 +243,33 @@ def pipeline_tick_data(df: pd.DataFrame, source: str) -> pd.DataFrame:
     df['trade_datetime'] = df['trade_datetime'].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
     if 'option_type' in df.columns: df['option_type'] = df['option_type'].astype(str).str.strip().map({'C':'C','P':'P','買':'C','賣':'P'})
     if 'volume' not in df.columns and 'volume_with_side' in df.columns:
-        df['volume'] = df['volume_with_side'].astype(str).str.extract(r'(\d+)').iloc[:,0]
+        # 確保提取的 volume 是字串，以便後續清理
+        df['volume'] = df['volume_with_side'].astype(str).str.extract(r'(\d+)').iloc[:,0].astype(str)
+        # 如果提取結果是 <NA> (pandas StringArray NA), 轉換為 np.nan 字串以便 to_numeric 正確處理為 NaN
+        # pd.to_numeric('nan', errors='coerce') -> np.nan
+        # pd.to_numeric('<NA>', errors='coerce') -> np.nan (Pandas 1.0+ 應該可以正確處理)
+        # 為保險起見，明確處理可能的 pandas NA 字串表示
+        df.loc[df['volume'].str.lower() == '<na>', 'volume'] = 'nan'
+
+
     num_cols = ['strike_price','price','volume']
     for col in num_cols:
-        if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
+        if col in df.columns:
+            # 應用與 pipeline_daily_ohlc 類似的穩健轉換邏輯
+            # Tick 數據通常不含 '-' 代表 NaN，但為保持一致性與穩健性，可以保留 replace('-', '')
+            # 主要針對可能存在的千分位符號（儘管在 tick data 中不常見）和其他非數值字元
+            df[col] = df[col].astype(str).str.replace(',', '', regex=False).str.replace('-', '', regex=False)
+            # 移除任何非數字和小數點的字元，以處理像 'scl' 或其他髒數據
+            # 這個正則表達式會保留數字和小數點，移除其他所有字元
+            # 例如 "scl123.45abc" -> "123.45"
+            # 注意：如果原始設計是嚴格要求純數字，這個步驟可能過於寬鬆。
+            # 但根據任務要求「不計一切代價，將任何無法解析的髒數據（如 'scl'）安全地轉換為 NaN」，
+            # 以下的 pd.to_numeric(errors='coerce') 才是最終的防線。
+            # 此處的 replace 主要是為了輔助 to_numeric，例如 "123scl" -> "123"
+            # df[col] = df[col].astype(str).str.replace(r'[^\d\.]', '', regex=True) # 暫時註解此行，優先依賴 to_numeric errors='coerce'
+
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
     df['source'] = source; return df.dropna(subset=['trade_datetime','product_id','price','volume'])
 
 def pipeline_institutional_investors(df: pd.DataFrame, source: str) -> pd.DataFrame:
