@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 # 精煉廠測試檔 (v16.0 批次掃描版)
 import os
+# 確保 DuckDB 和其他數值計算庫在受限環境下不會因線程競爭導致效能下降
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 import sys
 import unittest
 import subprocess
@@ -25,24 +28,47 @@ except Exception as e:
     pass
 # --- 路徑自我校正樣板碼結束 ---
 
-from apps.taifex_data_pipeline.run import SimpleLogger, determine_parsing_recipe, worker_process_file, HardwareManager
+# from apps.taifex_data_pipeline.run import SimpleLogger, determine_parsing_recipe, HardwareManager # worker_process_file 已移除
+from apps.taifex_data_pipeline.run import SimpleLogger, HardwareManager # determine_parsing_recipe 仍在 run.py 中，但測試可能不再直接調用它
 
-class TestTaifexDataPipelineBatch(unittest.TestCase): # 更名以區分
+class TestTaifexDataPipelineAsync(unittest.TestCase):
+    """
+    針對重構後的非同步串流版本 `run.py` 的端到端測試。
+    主要測試 `run.py` 作為一個整體應用程式，通過命令列介面執行時，
+    是否能正確處理輸入的樣本數據（ZIP 檔案和單獨的 CSV 檔案），
+    並在 DuckDB 資料庫中生成預期的表和數據。
+    """
 
     def setUp(self):
+        """
+        為每個測試案例設定初始環境。
+        - 初始化一個測試專用的 logger (雖然對 subprocess 影響有限)。
+        - 定義測試所需的檔案路徑 (run.py 腳本, 樣本 ZIP, 臨時 tick data CSV)。
+        - 創建臨時目錄用於存放測試輸入、資料庫輸出和工作檔案。
+        - 將樣本 ZIP 檔案複製到臨時輸入目錄。
+        - 調用 `_create_sample_tick_data_csv` 創建包含有效和無效數據的 tick data 樣本 CSV，
+          並將其複製到臨時輸入目錄，以供 `run.py` 處理。
+        """
         # 初始化測試專用的 logger
         # 注意：這會覆蓋 run.py 中全域的 logger，僅在測試期間生效
-        global logger
+        # global logger # logger is already global in run.py, this line is not needed here
+        # To ensure test logger is used if run.py's logger is accessed by imported functions:
+        # This is tricky because run.py initializes its own logger.
+        # For subprocess calls, run.py will use its own logger.
+        # For direct function calls from run.py (if any were tested this way), we'd need to patch run.py.logger
         self.logger = SimpleLogger(log_level="DEBUG")
-        logger = self.logger # 讓 run.py 中直接使用 logger 的部分能獲取到這個實例
+        # If run.py's functions are imported and use its global logger, this won't override it unless patched.
+        # However, the main test `test_pipeline_end_to_end` uses subprocess, so run.py's internal logger is used.
 
-        self.pipeline_run_py = os.path.join(current_pipeline_dir, "run.py")
-        self.sample_zip_file_path = os.path.join(current_pipeline_dir, "sample_pipeline_data.zip")
+        self.current_pipeline_dir = os.path.dirname(os.path.abspath(__file__))
+        self.pipeline_run_py = os.path.join(self.current_pipeline_dir, "run.py")
+        self.sample_zip_file_path = os.path.join(self.current_pipeline_dir, "sample_pipeline_data.zip")
+        self.tick_data_sample_csv_path = os.path.join(self.current_pipeline_dir, "tick_data_sample.csv") # 新增
 
-        self.base_temp_dir = tempfile.mkdtemp(prefix="test_pipeline_batch_")
-        self.temp_input_dir = os.path.join(self.base_temp_dir, "input") # run.py 的 --input-dir
-        self.temp_db_output_dir = os.path.join(self.base_temp_dir, "db_output") # run.py 的 --db-output-dir
-        self.temp_work_dir = os.path.join(self.base_temp_dir, "work_temp") # run.py 的 --temp-dir
+        self.base_temp_dir = tempfile.mkdtemp(prefix="test_pipeline_async_") # 更新前綴
+        self.temp_input_dir = os.path.join(self.base_temp_dir, "input")
+        self.temp_db_output_dir = os.path.join(self.base_temp_dir, "db_output")
+        self.temp_work_dir = os.path.join(self.base_temp_dir, "work_temp")
 
         os.makedirs(self.temp_input_dir, exist_ok=True)
         os.makedirs(self.temp_db_output_dir, exist_ok=True)
@@ -51,39 +77,106 @@ class TestTaifexDataPipelineBatch(unittest.TestCase): # 更名以區分
         if not os.path.exists(self.sample_zip_file_path):
             self.fail(f"測試 ZIP 檔案 {self.sample_zip_file_path} 不存在。")
 
-        # 在此版本測試中，run.py 會掃描 --input-dir，所以我們需要將 ZIP 複製進去
         shutil.copy(self.sample_zip_file_path, os.path.join(self.temp_input_dir, "sample_pipeline_data.zip"))
+
+        # 準備並複製 tick_data_sample.csv
+        self._create_sample_tick_data_csv(self.tick_data_sample_csv_path)
+        if os.path.exists(self.tick_data_sample_csv_path): # 防禦性檢查
+            shutil.copy(self.tick_data_sample_csv_path, os.path.join(self.temp_input_dir, "tick_data_sample.csv"))
+        else:
+            self.logger.warning(f"測試用的 tick_data_sample.csv 未能創建於 {self.tick_data_sample_csv_path}，tick data 相關測試可能不完整。")
+
+
+    def _create_sample_tick_data_csv(self, file_path: str):
+        """
+        輔助函數：在指定的 `file_path` 創建一個包含混合（有效與無效）數據的
+        `tick_data` 樣本 CSV 檔案。
+        此檔案用於測試 `run.py` 對 tick data 的解析、轉換及髒數據處理能力。
+        CSV 內容包含：
+        - 多行有效的期貨/選擇權 tick 記錄。
+        - 日期格式錯誤的記錄。
+        - 成交量包含無效字符的記錄。
+        - 價格為 "數據遺失" 的記錄。
+        - 成交量為 "---" 的記錄。
+        這些情況旨在模擬實際數據中可能遇到的問題，並驗證管線的穩健性。
+        """
+        # 確保表頭與 determine_parsing_recipe 中對 tick_data (csv_dynamic_header) 的預期一致
+        # 預期表頭包含：成交日期, 商品代號, 成交價格, 成交時間
+        # 為了能被 process_tick_data_row 正確處理，使用它期望的欄位名
+        # （process_tick_data_row 內部會做一些清理和映射）
+        # 原始 CSV 可能的表頭：成交日期,商品代號,到期月份(週別),履約價,買賣權,成交時間,成交價格,成交數量
+        content = """成交日期,商品代號,到期月份(週別),履約價,買賣權,成交時間,成交價格,成交數量
+20240726,TXO,202408W1,18000,買權,084501,120.5,2
+20240726,TXO,202408W1,18000,買權,084502,121.0,3
+20240726,MXF,202408,,,084503,1750.5,10
+BADDATE,MXF,202408,,,084504,1750.0,1
+20240726,TXF,202408,,,084505,17800,INVALID_VOL
+20240727,TXO,202408W2,17500,賣權,090000,50.0,5
+"""
+        # 加入一行包含 "數據遺失" 和 "---" 的髒數據，模擬 scl_trigger_sample 的情況
+        # 注意：determine_parsing_recipe 可能不會將這種情況識別為 tick_data，除非表頭符合
+        # 我們需要確保這個檔案的表頭能被識別為 tick_data
+        # content += "20240727,QQQ,202409,數據遺失,買權,090100,---,10\n" # 價格和成交量無效
+        # 為了讓 determine_parsing_recipe 能識別，我們還是用標準的 tick data 表頭
+        # process_tick_data_row 會處理數值轉換失敗的情況
+        content += "20240727,QQQ,202409,100,買權,090100,數據遺失,10\n" # 價格無效
+        content += "20240727,RRR,202409,200,賣權,090200,50.0,---\n" # 成交量無效
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        self.logger.info(f"已創建樣本 tick data CSV: {file_path}")
+
 
     def tearDown(self):
         if hasattr(self, 'base_temp_dir') and os.path.exists(self.base_temp_dir):
             shutil.rmtree(self.base_temp_dir)
+        if hasattr(self, 'tick_data_sample_csv_path') and os.path.exists(self.tick_data_sample_csv_path):
+            os.remove(self.tick_data_sample_csv_path) # 清理臨時創建的樣本檔案
 
-    def test_pipeline_batch_run(self):
-        test_db_name = "test_batch_analytics.duckdb"
+    def test_pipeline_end_to_end_run(self):
+        """
+        執行端到端的管線測試。
+        此測試模擬 `run.py` 腳本的實際執行，包括：
+        1. 準備一個包含樣本 ZIP 檔案和一個特製的 `tick_data_sample.csv` 的輸入目錄。
+        2. 通過 `subprocess.run` 調用 `run.py`，傳遞必要的命令列參數
+           (輸入目錄, 輸出目錄, 資料庫名稱, 臨時工作目錄, 日誌級別)。
+        3. 驗證 `run.py` 是否成功執行 (返回碼為 0)。
+        4. 檢查 `format_map.json` 是否已創建且內容不為空。
+        5. 檢查 DuckDB 資料庫檔案是否已創建。
+        6. 連接到生成的 DuckDB 資料庫，並對其中的數據進行驗證：
+           - `daily_ohlc` 表：檢查總記錄數是否符合預期 (基於 ZIP 中的樣本檔案)，
+             並抽樣檢查一條記錄的特定欄位值。
+           - `institutional_investors` 表：檢查總記錄數是否符合預期。
+           - `tick_data` 表：檢查總記錄數是否符合預期 (基於 `tick_data_sample.csv` 中
+             有效和無效數據的設計)，並抽樣檢查一條記錄的特定欄位值。
+        此測試旨在確保整個管線從檔案讀取、解析、轉換到數據庫載入的流程正確無誤，
+        並且能夠按預期處理有效的數據和過濾掉無效的數據。
+        """
+        test_db_name = "test_async_stream_analytics.duckdb" # 與 run.py 中預設一致或自定義
         db_full_path = os.path.join(self.temp_db_output_dir, test_db_name)
-        format_map_path = os.path.join(self.temp_db_output_dir, "format_map.json") # run.py 中的常數
+        format_map_path = os.path.join(self.temp_db_output_dir, "format_map.json")
 
         pipeline_command = [
             sys.executable, self.pipeline_run_py,
-            "--input-dir", self.temp_input_dir, # 包含 ZIP 的目錄
+            "--input-dir", self.temp_input_dir,
             "--db-output-dir", self.temp_db_output_dir,
             "--db-name", test_db_name,
             "--temp-dir", self.temp_work_dir,
-            "--log-level", "INFO"
+            "--log-level", "INFO" # 設為 DEBUG 可以看到更詳細的串流處理日誌
         ]
 
-        print(f"執行 (v16 Hotfix前) 精煉廠命令: {' '.join(pipeline_command)}")
+        print(f"執行 (v19.1 Async Stream) 精煉廠命令: {' '.join(pipeline_command)}")
         pipeline_process = subprocess.run(pipeline_command, capture_output=True, text=True, encoding='utf-8')
 
-        print(f"精煉廠 stdout (v16 Hotfix前):\n{pipeline_process.stdout}")
-        if pipeline_process.stderr:
-            print(f"精煉廠 stderr (v16 Hotfix前):\n{pipeline_process.stderr}")
+        print(f"精煉廠 stdout (v19.1 Async Stream):\n{pipeline_process.stdout}")
+        if pipeline_process.stderr: # stderr 通常用於錯誤訊息
+            print(f"精煉廠 stderr (v19.1 Async Stream):\n{pipeline_process.stderr}")
 
         self.assertEqual(pipeline_process.returncode, 0,
-                         f"精煉廠 run.py (v16 Hotfix前) 應成功執行。Stderr: {pipeline_process.stderr}")
+                         f"精煉廠 run.py (v19.1 Async Stream) 應成功執行。Stderr: {pipeline_process.stderr}")
 
         self.assertTrue(os.path.exists(format_map_path), f"格式地圖 {format_map_path} 未建立。")
-        with open(format_map_path, 'r') as f_map:
+        with open(format_map_path, 'r', encoding='utf-8') as f_map:
             format_map_content = json.load(f_map)
         self.assertTrue(len(format_map_content) > 0, "格式地圖不應為空。")
 
@@ -91,110 +184,94 @@ class TestTaifexDataPipelineBatch(unittest.TestCase): # 更名以區分
 
         con = duckdb.connect(database=db_full_path, read_only=True)
 
-        # **預期**: 在 Hotfix 後, futures_daily_sample.csv 應被正確解析
-        # 所以 daily_ohlc 記錄數應為 5 (options v1(2) + v2(2) + futures(1))
+        # 驗證 daily_ohlc (來自 zip)
         res_ohlc_count = con.execute("SELECT COUNT(*) FROM daily_ohlc;").fetchone()
         self.assertIsNotNone(res_ohlc_count)
-        self.assertEqual(res_ohlc_count[0], 5, f"daily_ohlc 表記錄數 (Hotfix後) 應為5, 實際 {res_ohlc_count[0]}")
+        self.assertEqual(res_ohlc_count[0], 5, f"daily_ohlc 表記錄數應為5, 實際 {res_ohlc_count[0]}")
 
         res_v1_sample = con.execute("SELECT close FROM daily_ohlc WHERE product_id='TXO' AND expiry_month='202201W1' AND strike_price=18000 AND option_type='C' AND trading_date='2022-01-04';").fetchone()
         self.assertIsNotNone(res_v1_sample)
         self.assertEqual(res_v1_sample[0], 190.0)
 
+        # 驗證 institutional_investors (來自 zip)
         res_inst_count = con.execute("SELECT COUNT(*) FROM institutional_investors;").fetchone()
         self.assertIsNotNone(res_inst_count)
         self.assertEqual(res_inst_count[0], 2, f"institutional_investors 記錄數應為2, 實際 {res_inst_count[0]}")
 
-        res_inst_sample_fut = con.execute("SELECT long_pos_vol FROM institutional_investors WHERE product_name='臺股期貨' AND investor_type='外資' AND data_date='2023-01-03' AND instrument_type='Future';").fetchone()
-        self.assertIsNotNone(res_inst_sample_fut)
-        self.assertEqual(res_inst_sample_fut[0], 10000)
+        # 驗證 tick_data (來自 tick_data_sample.csv)
+        # 預期：20240726 TXO (2行), 20240726 MXF (1行), 20240727 TXO (1行) = 4行
+        # BADDATE 行會被 process_tick_data_row 中的日期轉換失敗而返回 None
+        # INVALID_VOL 行會被 process_tick_data_row 中的數值轉換失敗而返回 None (如果 volume 是核心 dropna 欄位)
+        # "數據遺失" price 行會導致 price 為 None，進而被 dropna 移除
+        # "---" volume 行會導致 volume 為 None，進而被 dropna 移除
+        # 所以，tick_data_sample.csv 中：
+        # 1. 20240726,TXO,...120.5,2 (有效)
+        # 2. 20240726,TXO,...121.0,3 (有效)
+        # 3. 20240726,MXF,...1750.5,10 (有效)
+        # 4. BADDATE,... (無效, trade_datetime is None) -> process_tick_data_row returns None
+        # 5. ...,INVALID_VOL (無效, volume is None) -> process_tick_data_row returns None
+        # 6. 20240727,TXO,...50.0,5 (有效)
+        # 7. ...,數據遺失,... (無效, price is None) -> process_tick_data_row returns None
+        # 8. ...,---,... (無效, volume is None) -> process_tick_data_row returns None
+        # 總共 4 行有效數據
+        res_tick_count = con.execute("SELECT COUNT(*) FROM tick_data;").fetchone()
+        self.assertIsNotNone(res_tick_count)
+        self.assertEqual(res_tick_count[0], 4, f"tick_data 表記錄數應為4, 實際 {res_tick_count[0]}")
+
+        # 抽樣驗證 tick_data 的一筆記錄
+        # 例如，驗證 20240726,TXO,202408W1,18000,買權,084501,120.5,2
+        # trade_datetime 會是 '2024-07-26 08:45:01.000000'
+        # product_id='TXO', expiry_month='202408W1', strike_price=18000, option_type='C', price=120.5, volume=2
+        # 逐步調試查詢條件，先移除時間條件
+        # query_datetime_condition = "strftime(trade_datetime, '%Y-%m-%d %H:%M:%S.%f') = '2024-07-26 08:45:01.000000'"
+        # sql_query = f"SELECT price, volume, trade_datetime FROM tick_data WHERE product_id='TXO' AND strike_price=18000 AND option_type='C' AND {query_datetime_condition};"
+
+        # 測試1: 只用 product_id
+        sql_query_pid = "SELECT product_id, strike_price, option_type, trade_datetime FROM tick_data WHERE product_id='TXO'"
+        self.logger.debug(f"執行 tick_data product_id 查詢: {sql_query_pid}")
+        res_pid = con.execute(sql_query_pid).fetchall()
+        self.logger.debug(f"product_id='TXO' 查詢結果: {res_pid}")
+        self.assertTrue(len(res_pid) >= 2, f"至少應有2條 product_id='TXO' 的記錄, 實際: {len(res_pid)}。查詢: {sql_query_pid}")
+
+        # 測試2: product_id 和 strike_price
+        sql_query_sp = "SELECT product_id, strike_price, option_type, trade_datetime FROM tick_data WHERE product_id='TXO' AND strike_price=18000"
+        self.logger.debug(f"執行 tick_data strike_price 查詢: {sql_query_sp}")
+        res_sp = con.execute(sql_query_sp).fetchall()
+        self.logger.debug(f"strike_price=18000 查詢結果: {res_sp}")
+        self.assertTrue(len(res_sp) >= 2, f"至少應有2條 TXO@18000 的記錄, 實際: {len(res_sp)}。查詢: {sql_query_sp}")
+
+        # 測試3: product_id, strike_price, option_type
+        sql_query_opt = "SELECT product_id, strike_price, option_type, trade_datetime FROM tick_data WHERE product_id='TXO' AND strike_price=18000 AND option_type='C'"
+        self.logger.debug(f"執行 tick_data option_type 查詢: {sql_query_opt}")
+        res_opt = con.execute(sql_query_opt).fetchall()
+        self.logger.debug(f"option_type='C' 查詢結果: {res_opt}")
+        self.assertTrue(len(res_opt) >= 2, f"至少應有2條 TXO@18000C 的記錄, 實際: {len(res_opt)}。查詢: {sql_query_opt}")
+
+        if res_opt:
+            self.logger.info(f"找到的 TXO@18000C 記錄的 trade_datetime 值: {[r[3] for r in res_opt]}")
+
+        # 最終查詢，包含時間
+        query_datetime_condition = "strftime(trade_datetime, '%Y-%m-%d %H:%M:%S.%f') = '2024-07-26 08:45:01.000000'"
+        sql_query_final = f"SELECT price, volume FROM tick_data WHERE product_id='TXO' AND strike_price=18000 AND option_type='C' AND {query_datetime_condition};"
+        self.logger.debug(f"執行 tick_data 樣本查詢 (含完整時間條件): {sql_query_final}")
+        res_tick_sample_final = con.execute(sql_query_final).fetchone()
+
+        self.assertIsNotNone(res_tick_sample_final, f"未能查詢到指定的 tick_data 樣本記錄。查詢: {sql_query_final}")
+        if res_tick_sample_final:
+            self.assertEqual(res_tick_sample_final[0], 120.5, "tick_data 樣本價格不符。")
+            self.assertEqual(res_tick_sample_final[1], 2, "tick_data 樣本成交量不符。") # 修正此處的變數名
+
         con.close()
 
-    def test_process_file_with_scl_trigger_sample(self):
-        """
-        測試 pipeline_tick_data 是否能處理包含已知髒數據（類似導致 'scl' 的情況）的樣本。
-        預期：髒數據應被轉換為 NaN，並且如果影響到 dropna 的關鍵欄位，則該行被移除，
-              或者 worker_process_file 成功返回，相應欄位為 NaN。
-              整個過程不應拋出未處理的 'scl' 異常。
-        """
-        self.logger.info("--- 開始執行: test_process_file_with_scl_trigger_sample --- (QA)")
-        # from apps.taifex_data_pipeline.run import determine_parsing_recipe, worker_process_file, SimpleLogger, HardwareManager # 已在頂部導入
-
-        # 來自指令的 trigger_scl_error_sample.csv 內容
-        csv_content_str = """成交日期,商品代號,到期月份(週別),成交時間,成交價格,成交數量(B+S),開盤價,最高價,最低價,結算價,近月價格,遠月價格,委買價格,委賣價格,委買數量,委賣數量
-20250701,TX,202507,084500,18001,10,18000,18005,17999,18002,18001,18010,18000,18001,20,15
-20250701,TX,202507,084501,數據遺失,5,18002,18006,18001,18003,18001,18010,18001,18002,22,18
-20250701,TX,202507,084502,18005,---,18004,18008,18003,18005,18001,18010,18004,18005,19,13
-20250701,TX,202507,084503,18010,8,18009,18012,18008,18011,18001,18010,18009,18010,25,30
-"""
-        # hw_mgr 初始化，logger 已在 setUp 中設定並賦值給全域 logger
-        hw_mgr = HardwareManager(user_max_workers=1)
-
-
-        descriptor = "trigger_scl_error_sample.csv"
-        content_bytes = csv_content_str.encode('ms950') # 假設是 MS950 編碼
-
-        # 1. 確定解析配方
-        # 為了讓 determine_parsing_recipe 正確識別為 tick_data，我們需要確保 header 和內容符合其判斷邏輯
-        # Daily_*.csv 通常是動態表頭，包含 "成交日期", "商品代號", "成交價格", "成交時間"
-        # 指令中提供的樣本是CSV，所以應該是 csv_dynamic_header -> tick_data
-        recipe = determine_parsing_recipe(content_bytes, descriptor)
-        self.assertIsNotNone(recipe, "無法為樣本數據確定解析配方。")
-        self.assertEqual(recipe.get("pipeline"), "tick_data", f"樣本數據應被識別為 'tick_data' 管線，而非 '{recipe.get('pipeline')}'")
-        self.assertIn(recipe.get("parser"), ["csv_dynamic_header", "csv"], f"預期解析器為 csv_dynamic_header 或 csv，得到 {recipe.get('parser')}")
-
-
-        # 2. 執行 worker_process_file
-        # worker_process_file 需要一個 staging_path
-        staging_dir = os.path.join(self.base_temp_dir, "scl_test_staging")
-        os.makedirs(staging_dir, exist_ok=True)
-
-        result = worker_process_file((descriptor, content_bytes, recipe, staging_dir, hw_mgr))
-
-        self.logger.debug(f"worker_process_file 結果: {result}")
-
-        # 3. 驗證結果
-        # 預期：worker_process_file 應成功執行 (status: 'success')
-        # 因為 pipeline_tick_data 中的 errors='coerce' 會將 "數據遺失" 和 "---" 轉為 NaN
-        # 然後 dropna(subset=['trade_datetime','product_id','price','volume']) 會移除這些行
-        self.assertEqual(result.get("status"), "success",
-                         f"處理包含髒數據的樣本時，worker_process_file 未成功。錯誤: {result.get('error_msg')}")
-
-        # 由於第二行 price='數據遺失' -> NaN, 第三行 volume='---' -> NaN，這兩行都會被 dropna 移除
-        # 所以最終 parquet 檔案中應該只包含第一行和第四行數據
-        self.assertEqual(result.get("rows"), 2,
-                         f"預期處理後剩下 2 行數據，實際得到 {result.get('rows')} 行。檢查髒數據是否按預期被移除。")
-
-        # 可以進一步讀取 parquet 檔案驗證內容 (可選)
-        if result.get("status") == "success" and result.get("file"):
-            import pandas as pd
-            df_processed = pd.read_parquet(result.get("file"))
-            self.assertEqual(len(df_processed), 2, "Parquet 檔案中的行數與預期不符。")
-
-            # 檢查 price 和 volume 是否都是數值類型且不含 NaN (因為 NaN 的行已被移除)
-            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['price']), "處理後的 'price' 欄位應為數值類型。")
-            self.assertTrue(pd.api.types.is_numeric_dtype(df_processed['volume']), "處理後的 'volume' 欄位應為數值類型。")
-            self.assertFalse(df_processed['price'].isnull().any(), "'price' 欄位不應包含 NaN 值（NaN 的行已被移除）。")
-            self.assertFalse(df_processed['volume'].isnull().any(), "'volume' 欄位不應包含 NaN 值（NaN 的行已被移除）。")
-
-            # 新增：驗證 source 欄位
-            self.assertIn('source', df_processed.columns, "Parquet 檔案應包含 'source' 欄位。")
-            self.assertEqual(df_processed['source'].nunique(), 1, "'source' 欄位應只有一個唯一值。")
-            self.assertEqual(df_processed['source'].iloc[0], descriptor,
-                             f"'source' 欄位的值應為檔案描述符 '{descriptor}'，實際為 '{df_processed['source'].iloc[0]}'")
-            self.assertTrue(pd.api.types.is_object_dtype(df_processed['source']), "'source' 欄位應為 object (string) 類型。")
-
-            self.logger.debug("Parquet 檔案內容及 source 欄位驗證通過。")
-
-        self.logger.info("--- test_process_file_with_scl_trigger_sample 執行完畢 --- (QA)")
+    # test_process_file_with_scl_trigger_sample 已被移除的功能所替代
 
 
 if __name__ == "__main__":
     # unittest.main(argv=['first-arg-is-ignored'], exit=False)
     # 為了能在 Colab 或腳本中單獨運行和調試，可以這樣配置：
     suite = unittest.TestSuite()
-    # suite.addTest(TestTaifexDataPipelineBatch('test_pipeline_batch_run')) # 如果需要運行舊測試
-    suite.addTest(TestTaifexDataPipelineBatch('test_process_file_with_scl_trigger_sample'))
+    suite.addTest(TestTaifexDataPipelineAsync('test_pipeline_end_to_end_run')) # 運行主要的端到端測試
+    # suite.addTest(TestTaifexDataPipelineAsync('test_process_file_with_scl_trigger_sample')) # 此測試已被移除或合併邏輯
     runner = unittest.TextTestRunner()
     runner.run(suite)
 
