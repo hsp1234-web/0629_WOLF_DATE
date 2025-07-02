@@ -12,6 +12,8 @@ import time
 import threading
 import argparse
 from datetime import datetime
+import multiprocessing # 新增 for type hinting
+import queue # 新增 for queue.Empty
 from typing import Generator, Tuple, Dict, Any, Optional, List
 import concurrent.futures
 
@@ -526,11 +528,13 @@ def process_single_file_entry(
     descriptor: str, # 描述符，例如 "zip_filename -> internal_csv_filename" 或僅檔名
     db_conn: duckdb.DuckDBPyConnection,
     format_map: dict, # 共享的格式地圖 (dict)
-    hw_manager: HardwareManager # 用於日誌
+    hw_manager: HardwareManager, # 用於日誌
+    file_type_hint: Optional[str] = None # 新增：來自佇列的檔案類型提示
     # temp_processing_dir: str # 如果需要解壓縮ZIP內的檔案到臨時位置
 ) -> Dict[str, Any]:
     """
     處理從佇列接收到的單個檔案條目：讀取、解析、清洗並直接寫入 DuckDB。
+    可以接受 file_type_hint 以優先決定 pipeline。
     返回處理結果字典。
     """
     logger.info(f"開始處理佇列項目: {descriptor}")
@@ -618,10 +622,21 @@ def process_single_file_entry(
                 continue
 
             # 4. 清洗
-            pipeline_name = recipe.get("pipeline")
-            pipeline_func = PIPELINE_MAP.get(pipeline_name)
+            # 優先使用 file_type_hint (如果有效) 來決定 pipeline_name
+            # 否則，使用 recipe 中的 pipeline
+            pipeline_name_to_use = None
+            if file_type_hint and file_type_hint in PIPELINE_MAP:
+                pipeline_name_to_use = file_type_hint
+                logger.info(f"使用來自佇列的檔案類型提示 '{file_type_hint}' 作為管線名稱。")
+            else:
+                pipeline_name_to_use = recipe.get("pipeline")
+                if file_type_hint and file_type_hint not in PIPELINE_MAP:
+                    logger.warning(f"提供的檔案類型提示 '{file_type_hint}' 在 PIPELINE_MAP 中找不到，將依賴內容推斷 ({pipeline_name_to_use})。")
+
+
+            pipeline_func = PIPELINE_MAP.get(pipeline_name_to_use)
             if not pipeline_func:
-                logger.warning(f"'{item_descriptor[:60]}' 無對應管線 '{pipeline_name}'，跳過。")
+                logger.warning(f"'{item_descriptor[:60]}' 無對應管線 '{pipeline_name_to_use}' (提示: {file_type_hint}, 推斷: {recipe.get('pipeline')})，跳過。")
                 continue
 
             cleaned_df = pipeline_func(parsed_df, item_descriptor) # descriptor 作為 source
@@ -743,35 +758,52 @@ def process_single_file_entry(
     return {'status': status, 'message': message, 'descriptor': descriptor, 'rows_added': total_rows_added_for_entry, 'map_updated_internally': map_updated_by_this_item if 'map_updated_by_this_item' in locals() else False}
 
 
-# 原 run_duckdb_loading_stage 函式將被移除或其邏輯併入 process_single_file_entry 和 run_pipeline_from_queue
+# 原 run_duckdb_loading_stage 函式將被移除或其邏輯併入 process_single_file_entry 和 run_pipeline_from_queue (已完成)
 
 
 # ==============================================================================
-# 主執行函數 (v18.0 佇列驅動版本)
+# 主執行函數 (v18.0 佇列驅動版本) - 依照計畫書進行修改/創建
 # ==============================================================================
 def run_pipeline_from_queue(
-    task_queue: Any, # multiprocessing.Queue or queue.Queue
-    db_file_path: str,
-    format_map_path: str,
-    processing_temp_dir: str, # 用於解壓縮等，如果 process_single_file_entry 需要
-    hw_settings: Dict[str, Any],
-    stop_sentinel: Any = "STOP_PROCESSING_PIPELINE" # 哨兵值
+    task_queue: multiprocessing.Queue, # 來自 downloader 的共享佇列
+    db_output_dir: str, # 資料庫和格式地圖的輸出目錄
+    stop_sentinel: str, # 停止信號
+    db_name: str = "taifex_pipeline_analytics_v18.duckdb", # 資料庫檔案名
+    processing_temp_dir_name: str = "temp_pipeline_processing_v18", # 臨時目錄名
+    # hw_settings: Dict[str, Any] # 從 main 或協調器傳入，這裡暫時內部創建
 ):
-    logger.header("TAIFEX 數據精煉廠 v18.0 (佇列模式) 啟動")
+    """
+    從共享佇列循環讀取任務，並處理每個檔案。
+    """
+    # 初始化日誌記錄器 (如果尚未在全域初始化，或需要特定配置)
+    # global logger (假設 logger 已在模組層級初始化)
+    # logger = SimpleLogger() # 或者在此處重新初始化
 
-    hw_manager = HardwareManager(
-        user_max_workers=hw_settings.get("max_workers"),
-        user_memory_limit_gb=hw_settings.get("memory_limit_gb")
-    )
+    logger.header("TAIFEX 數據精煉廠 v18.0 (佇列處理模式) 啟動")
+
+    # 硬體管理器 (可從外部傳入配置，或使用預設)
+    # 這邊暫時使用預設，協調器可以傳遞 hw_settings dict 來客製化
+    hw_manager = HardwareManager(user_max_workers=None, user_memory_limit_gb=None)
     hw_manager.display_initial_dashboard()
 
-    # 建立必要的目錄 (通常由協調器或 main 函式處理，但這裡也檢查一下)
-    os.makedirs(os.path.dirname(db_file_path), exist_ok=True)
-    os.makedirs(os.path.dirname(format_map_path), exist_ok=True)
-    os.makedirs(processing_temp_dir, exist_ok=True)
+    # 設定路徑
+    db_output_dir = os.path.abspath(db_output_dir)
+    db_file_path = os.path.join(db_output_dir, db_name)
+    format_map_path = os.path.join(db_output_dir, FORMAT_MAP_FILENAME) # FORMAT_MAP_FILENAME 是全域常數
+    processing_temp_dir = os.path.join(db_output_dir, processing_temp_dir_name)
+
+    # 建立必要的目錄
+    try:
+        os.makedirs(db_output_dir, exist_ok=True)
+        os.makedirs(processing_temp_dir, exist_ok=True)
+        logger.info(f"資料庫輸出目錄: {db_output_dir}")
+        logger.info(f"處理中暫存目錄: {processing_temp_dir}")
+    except OSError as e:
+        logger.error(f"建立目錄時發生錯誤: {e}")
+        return # 無法建立目錄，則無法繼續
 
     # 載入或初始化 format_map
-    format_map = {}
+    format_map: Dict[str, Any] = {}
     if os.path.exists(format_map_path):
         try:
             with open(format_map_path, 'r', encoding='utf-8') as f_map:
@@ -779,191 +811,198 @@ def run_pipeline_from_queue(
             logger.info(f"已成功從 {format_map_path} 載入格式地圖 ({len(format_map)}筆)。")
         except Exception as e_map_load:
             logger.warning(f"載入格式地圖 {format_map_path} 失敗: {e_map_load}。將建立新地圖。")
-
-    format_map_changed_during_run = False
+    format_map_changed_during_run = False # 追蹤 format_map 是否在運行中被修改
 
     # 初始化 DuckDB 連接
-    db_conn = None
+    db_conn: Optional[duckdb.DuckDBPyConnection] = None
     try:
         db_conn = duckdb.connect(database=db_file_path, read_only=False)
         logger.success(f"成功連接至 DuckDB: {db_file_path}")
-        # 設定 DuckDB 環境 (如果需要，但通常在連接字串或PRAGMA中設定)
-        # db_conn.execute(f"SET memory_limit = '{hw_manager.memory_limit_gb}GB';") # 已由 hw_manager 內部設定
-        # db_conn.execute(f"SET threads = {hw_manager.max_workers};")
-        db_conn.execute(f"SET temp_directory = '{os.path.join(processing_temp_dir, 'duckdb_worker_temp')}';")
+        # 設定 DuckDB 環境
+        db_conn.execute(f"SET memory_limit = '{hw_manager.memory_limit_gb}GB';")
+        # db_conn.execute(f"SET threads = {hw_manager.max_workers};") # DuckDB 會自行決定最佳線程數
+        duckdb_temp_storage = os.path.join(processing_temp_dir, 'duckdb_worker_temp')
+        os.makedirs(duckdb_temp_storage, exist_ok=True) # 確保 DuckDB 的臨時目錄存在
+        db_conn.execute(f"SET temp_directory = '{duckdb_temp_storage}';")
 
-        # 建立 schema (表格、序列、索引)
+        # 建立 schema (表格、序列)
         for seq_sql in SEQUENCES.values(): db_conn.execute(seq_sql)
         for table_sql in TABLE_DEFINITIONS.values(): db_conn.execute(table_sql)
-        # 唯一索引通常在數據插入後或期間建立，以優化大量插入性能
-        # 但如果依賴 ON CONFLICT (業務鍵)，則需先建立
-        # 這裡的邏輯是 process_single_file_entry 內部會嘗試建立
-        logger.info("資料庫 schema (表格、序列) 已確認/建立。唯一索引將在寫入時處理。")
+        # 唯一索引的建立已移至 process_single_file_entry 中，在 ON CONFLICT 前執行
+        logger.info("資料庫 schema (表格、序列) 已確認/建立。唯一索引將在首次寫入相關表時處理。")
 
     except Exception as e_db_init:
         logger.error(f"佇列處理器：資料庫初始化失敗 ({db_file_path}): {e_db_init}")
-        # 如果DB無法初始化，則無法繼續處理佇列
-        if db_conn: db_conn.close()
-        return # 或拋出例外
+        if db_conn:
+            try: db_conn.close()
+            except Exception: pass
+        return # 或拋出例外讓協調器知道
 
-    total_files_processed = 0
+    # 映射 downloader 的 file_type (task_key) 到 pipeline 內部使用的 pipeline_name
+    # 這是一個簡化版，實際應用中可能需要更完善的映射表或邏輯
+    downloader_file_type_to_pipeline_name_map = {
+        'futures_trades': 'daily_ohlc',
+        'futures_summary': 'daily_ohlc',
+        'options_trades': 'daily_ohlc',
+        'options_summary': 'daily_ohlc',
+        'institutional_investors': 'institutional_investors',
+        'put_call_ratio': 'pcr',
+        'final_settlement_price': 'daily_ohlc', # 假設結算價也進入 daily_ohlc，或需要專用管線
+        # 'tick_data' 通常是另一種來源，這裡假設 downloader 傳來的類型不直接是 'tick_data'
+        # 如果 downloader 也下載純文字 tick data，則需要加入映射
+    }
+
+    total_items_processed = 0
     total_rows_accumulated = 0
+    logger.info(f"開始監聽任務佇列... (停止信號: '{stop_sentinel}')")
 
     while True:
         try:
-            # 佇列項目預期是下載器放入的檔案路徑 (str) 或包含路徑的字典
-            # 例如: {'type': 'file', 'path': '/path/to/downloaded_file.zip', 'original_url': '...'}
-            # 或直接是 '/path/to/downloaded_file.zip'
-            # 哨兵值用於停止
-            queue_item = task_queue.get(timeout=5) # timeout 防止永久阻塞，但協調器應保證哨兵
+            # 阻塞式讀取佇列，timeout 避免永久阻塞 (如果協調器崩潰未發送哨兵)
+            task = task_queue.get(block=True, timeout=10.0) # 10秒超時
 
-            if queue_item == stop_sentinel:
-                logger.info("收到停止信號，結束佇列處理。")
-                break
+            if task == stop_sentinel:
+                logger.info("收到停止信號，準備結束處理進程。")
+                break # 跳出 while 循環
 
-            file_path_to_process = None
-            item_descriptor_for_log = "未知項目"
-
-            if isinstance(queue_item, str): # 直接是路徑
-                file_path_to_process = queue_item
-                item_descriptor_for_log = os.path.basename(file_path_to_process)
-            elif isinstance(queue_item, dict) and 'path' in queue_item: # 字典格式
-                file_path_to_process = queue_item['path']
-                item_descriptor_for_log = queue_item.get('source_url', os.path.basename(file_path_to_process))
-            else:
-                logger.warning(f"佇列中收到未知格式項目: {queue_item}，跳過。")
+            if not isinstance(task, dict) or "file_path" not in task or "file_type" not in task:
+                logger.warning(f"從佇列收到格式不符的任務: {task}，已略過。")
                 continue
 
-            if not os.path.exists(file_path_to_process):
-                logger.warning(f"佇列提供的檔案路徑不存在: {file_path_to_process}，跳過。")
+            file_path = task["file_path"]
+            downloader_file_type = task["file_type"] # 例如 'futures_trades'
+            item_descriptor_for_log = f"{downloader_file_type} @ {os.path.basename(file_path)}"
+
+            logger.info(f"收到任務: 處理檔案 '{file_path}' (類型: {downloader_file_type})")
+
+            if not os.path.exists(file_path):
+                logger.error(f"任務指定的檔案路徑不存在: {file_path}，已略過。")
                 continue
+
+            # 將 downloader 的 file_type 轉換為內部 pipeline 名稱
+            pipeline_hint = downloader_file_type_to_pipeline_name_map.get(downloader_file_type)
+            if not pipeline_hint:
+                logger.warning(f"無法將 downloader 檔案類型 '{downloader_file_type}' 映射到已知管線名稱，將依賴內容自動判斷。")
 
             # 調用核心處理函式
             result = process_single_file_entry(
-                file_path=file_path_to_process,
-                descriptor=item_descriptor_for_log,
+                file_path=file_path,
+                descriptor=item_descriptor_for_log, # 使用更有意義的描述符
                 db_conn=db_conn,
-                format_map=format_map, # 傳遞整個字典的引用
-                hw_manager=hw_manager
-                # processing_temp_dir # 如果 process_single_file_entry 需要解壓到特定位置
+                format_map=format_map,
+                hw_manager=hw_manager,
+                file_type_hint=pipeline_hint # 傳遞映射後的管線名稱提示
             )
-
-            total_files_processed += 1
+            total_items_processed += 1
             if result.get('status') == 'success':
                 total_rows_accumulated += result.get('rows_added', 0)
-            if result.get('map_updated_internally', False): # 檢查 format_map 是否在 process_single_file_entry 中被修改
+            if result.get('map_updated_internally', False):
                 format_map_changed_during_run = True
 
-            # 檔案處理完畢後可以考慮是否刪除本地原始檔 (如果它是從downloader的暫存區來的)
-            # 這取決於協調器的策略，pipeline worker 不應自行決定刪除佇列中的原始檔
-            # if file_path_to_process.startswith(downloader_local_temp_area):
-            #    try: os.remove(file_path_to_process) except OSError: pass
+            # 根據計畫書，不應在此處刪除 downloader 下載的檔案
 
-
-        except queue.Empty: # queue.Empty 是 queue 模組的例外
-            logger.info("佇列在超時時間內為空，繼續等待...")
-            # 這裡可以加入一個計數器，如果連續多次為空，可能意味著上游已結束但未發送哨兵
-            # 不過，正常的停止依賴於哨兵值
+        except queue.Empty: # 從 task_queue.get() timeout 引發
+            logger.debug("佇列在超時時間內為空，繼續等待新任務...")
+            # 這裡可以加入邏輯，例如如果連續N次為空，則發出警告或自行終止 (需謹慎)
             continue
-        except Exception as e_queue_loop:
-            logger.error(f"處理佇列時發生未預期錯誤: {e_queue_loop}")
-            # 決定是否要中斷整個 worker，或只是記錄錯誤並繼續
-            # 暫時選擇繼續，除非是嚴重到無法操作DB的錯誤
-            # time.sleep(1) # 避免快速連續失敗
+        except Exception as e: # 捕捉迴圈內的其他所有未知錯誤
+            logger.error(f"處理佇列任務時發生嚴重錯誤: {e}", exc_info=True) # exc_info=True 會記錄堆疊追蹤
+            # 可考慮短暫休眠，避免錯誤快速刷屏
+            time.sleep(1)
 
-    # 循環結束後
-    logger.info(f"佇列處理完畢。共處理 {total_files_processed} 個檔案條目，嘗試加入約 {total_rows_accumulated} 筆記錄。")
+    # 循環結束後的清理工作
+    logger.info(f"佇列處理循環結束。總共處理 {total_items_processed} 個任務，嘗試寫入約 {total_rows_accumulated} 筆記錄。")
 
-    if format_map_changed_during_run: # 只有在運行中確實修改了才儲存
+    if format_map_changed_during_run:
         try:
             with open(format_map_path, 'w', encoding='utf-8') as f_map_save:
                 json.dump(format_map, f_map_save, indent=4, ensure_ascii=False)
-            logger.info(f"格式地圖已更新並儲存至 {format_map_path}")
+            logger.success(f"格式地圖已更新並儲存至: {format_map_path}")
         except Exception as e_map_save_final:
             logger.error(f"儲存最終格式地圖至 {format_map_path} 時失敗: {e_map_save_final}")
 
     if db_conn:
         try:
-            # 在關閉前確保所有索引都已建立 (如果之前是延後建立)
-            for table_name_idx, idx_sql in UNIQUE_INDICES.items():
-                if table_name_idx in TABLE_DEFINITIONS: # 只為存在的表建立索引
-                    try:
-                        db_conn.execute(idx_sql)
-                        logger.info(f"已在 '{table_name_idx}' 上確認/重建最終唯一性索引。")
-                    except Exception as e_final_idx:
-                         logger.warning(f"在 '{table_name_idx}' 上建立最終唯一索引時發生警告/錯誤: {e_final_idx} (可能已存在或表結構問題)")
+            # 確保所有最終索引都已建立 (如果之前是延後建立)
+            # process_single_file_entry 內部已處理索引建立
+            logger.info("正在關閉資料庫連接...")
             db_conn.close()
-            logger.success(f"DuckDB 連線已關閉: {db_file_path}")
+            logger.success(f"DuckDB 連線已安全關閉: {db_file_path}")
         except Exception as e_db_close:
             logger.error(f"關閉 DuckDB 連線 ({db_file_path}) 時發生錯誤: {e_db_close}")
 
-    logger.header("TAIFEX 數據精煉廠 v18.0 (佇列模式) 執行完畢")
+    logger.header("TAIFEX 數據精煉廠 v18.0 (佇列處理模式) 執行完畢。")
 
 
-def main(): # main 現在主要用於獨立測試或作為一個可被協調器調用的入口點的包裝
+def main():
+    # 此 main 函式在 v18.0 架構下主要用於獨立測試 run_pipeline_from_queue。
+    # 協調器將直接導入並調用 run_pipeline_from_queue。
     parser = argparse.ArgumentParser(description="TAIFEX 數據精煉廠 v18.0 (佇列驅動測試模式)。")
-    # parser.add_argument("--input-dir", required=True, help="包含原始數據檔案的輸入目錄路徑。") # 已移除
     parser.add_argument("--db-output-dir", required=True, help="DuckDB 資料庫檔案及格式地圖的輸出目錄路徑。")
-    parser.add_argument("--db-name", default="taifex_pipeline_analytics_q.duckdb", help="DuckDB 資料庫的檔案名稱 (預設: taifex_pipeline_analytics_q.duckdb)。")
-    parser.add_argument("--processing-temp-dir", default=None, help="處理過程的臨時檔案目錄 (預設: 在 db-output-dir 下建立 'temp_pipeline_proc')。")
-    parser.add_argument("--test-file-path", default=None, help="[測試用] 單個或多個 (逗號分隔) 檔案路徑，用於填充測試佇列。")
-
-    # 硬體相關參數，傳遞給 hw_settings
-    parser.add_argument("--max-workers", type=int, default=None, help="並行處理核心數 (預設: CPU核心數 * 0.8) - 主要影響 hw_manager 日誌，實際並行由協調器控制。")
-    parser.add_argument("--memory-limit-gb", type=int, default=None, help="DuckDB 記憶體預算 (GB) (預設: 系統記憶體 * 0.5) - 主要影響 hw_manager 日誌。")
+    parser.add_argument("--db-name", default="taifex_pipeline_analytics_v18_test.duckdb", help="DuckDB 資料庫的檔案名稱。")
+    parser.add_argument("--processing-temp-dir-name", default="temp_pipeline_testing_v18", help="處理中暫存目錄的名稱 (將建立在 db-output-dir 下)。")
+    parser.add_argument("--test-file-path", default=None, help="[測試用] 單個檔案路徑，用於填充測試佇列。")
+    parser.add_argument("--test-file-type", default="futures_trades", help="[測試用] 對應 --test-file-path 的檔案類型 (例如 'futures_trades', 'options_trades')。")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="日誌級別 (預設: INFO)。")
 
     args = parser.parse_args()
 
-    global logger
-    logger = SimpleLogger(log_level=args.log_level)
-
-    db_output_dir = os.path.abspath(args.db_output_dir)
-    db_file_full_path = os.path.join(db_output_dir, args.db_name)
-    format_map_full_path = os.path.join(db_output_dir, FORMAT_MAP_FILENAME)
-
-    if args.processing_temp_dir:
-        processing_temp_dir = os.path.abspath(args.processing_temp_dir)
-    else:
-        processing_temp_dir = os.path.join(db_output_dir, "temp_pipeline_proc") # 改名以區分
-
-    hw_settings_dict = {
-        "max_workers": args.max_workers,
-        "memory_limit_gb": args.memory_limit_gb
-    }
+    global logger # 確保使用全域 logger
+    logger = SimpleLogger(log_level=args.log_level.upper())
 
     # --- 模擬佇列和協調器行為進行測試 ---
-    import queue # 使用標準佇列進行單進程測試
-    test_q = queue.Queue()
+    # 注意：在實際多進程環境中，應使用 multiprocessing.Manager().Queue()
+    # 此處為了單進程測試的簡便性，使用標準 queue.Queue
+    # 如果要測試跨進程，需要修改為 multiprocessing.Queue
+    try:
+        # 嘗試使用 multiprocessing.Queue 以更接近真實情況
+        # 但這需要 Manager，或者如果此 main 在單獨進程運行，則可以直接創建
+        mp_manager = multiprocessing.Manager()
+        test_q = mp_manager.Queue()
+        logger.info("使用 multiprocessing.Manager().Queue() 進行測試。")
+    except Exception:
+        logger.warning("無法初始化 multiprocessing.Manager().Queue()，回退到標準 queue.Queue 進行測試。")
+        test_q = queue.Queue()
+
 
     if args.test_file_path:
-        paths_to_test = args.test_file_path.split(',')
-        for p_test in paths_to_test:
-            p_test_abs = os.path.abspath(p_test.strip())
-            if os.path.exists(p_test_abs):
-                # 放入佇列的項目可以是簡單的路徑，或更結構化的字典
-                # 這裡用字典模擬 downloader 可能放入的格式
-                test_q.put({'type': 'file', 'path': p_test_abs, 'source_url': f'local_test_file:{os.path.basename(p_test_abs)}'})
-                logger.info(f"已將測試檔案 {p_test_abs} 加入佇列。")
-            else:
-                logger.warning(f"提供的測試檔案路徑不存在: {p_test_abs}")
+        p_test_abs = os.path.abspath(args.test_file_path.strip())
+        if os.path.exists(p_test_abs):
+            task_to_put = {"file_path": p_test_abs, "file_type": args.test_file_type}
+            test_q.put(task_to_put)
+            logger.info(f"已將測試任務 {task_to_put} 加入佇列。")
+        else:
+            logger.warning(f"提供的測試檔案路徑不存在: {p_test_abs}")
     else:
-        logger.info("未提供 --test-file-path，佇列為空。僅測試初始化和空佇列處理。")
+        logger.info("未提供 --test-file-path，佇列將僅包含停止信號。")
 
-    stop_signal = "STOP_PIPELINE_PROCESSING_PLEASE" # 哨兵值
-    test_q.put(stop_signal) # 加入哨兵值
+    stop_signal_for_test = "STOP_PIPELINE_TESTING_NOW"
+    test_q.put(stop_signal_for_test) # 加入哨兵值
 
-    run_pipeline_from_queue(
-        task_queue=test_q,
-        db_file_path=db_file_full_path,
-        format_map_path=format_map_full_path,
-        processing_temp_dir=processing_temp_dir,
-        hw_settings=hw_settings_dict,
-        stop_sentinel=stop_signal
-    )
+    logger.info(f"開始獨立測試 run_pipeline_from_queue (日誌級別: {args.log_level})...")
+    try:
+        run_pipeline_from_queue(
+            task_queue=test_q,
+            db_output_dir=args.db_output_dir,
+            db_name=args.db_name,
+            processing_temp_dir_name=args.processing_temp_dir_name,
+            stop_sentinel=stop_signal_for_test
+        )
+    except Exception as e_main_test:
+        logger.error(f"獨立測試 run_pipeline_from_queue 時發生頂層錯誤: {e_main_test}", exc_info=True)
+    finally:
+        if 'mp_manager' in locals() and hasattr(mp_manager, 'shutdown'):
+            mp_manager.shutdown() # 清理 multiprocessing Manager
 
-    logger.info("獨立測試模式執行完畢。")
+    logger.info("獨立測試模式執行完畢。請檢查日誌和輸出檔案。")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
+    # 設定全域 logger，以便在 main 之外的函式 (如 run_pipeline_from_queue) 也能使用
+    # 但由於 SimpleLogger 實例是在 main 內部根據 args.log_level 創建的，
+    # 這裡的全域 logger 可能是預設級別。
+    # 更好的做法是將 logger 實例傳遞給 run_pipeline_from_queue，或讓它自己創建。
+    # 目前的結構，logger 在模組層級已用預設INFO級別初始化。
+    # main 函式內部會用 args.log_level 重新賦值給全域 logger。
     main()

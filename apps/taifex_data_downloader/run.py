@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import warnings # 用於忽略 openpyxl 的警告，如果原始腳本有
 import asyncio
 import aiohttp
+import multiprocessing # 新增
+import queue # 新增，用於 queue.Full 例外
 from typing import List, Dict, Optional, Any
 # from tqdm.asyncio import tqdm as async_tqdm # tqdm 對 asyncio 的支持可能需要這個
 # 或者在 gather 後手動更新 tqdm
@@ -39,7 +41,8 @@ async def download_single_file_async(
     url: str,
     folder_path: str,
     file_name: str,
-    task_queue: Optional[Any] = None, # multiprocessing.Queue 不能直接在 asyncio 中使用，協調器需處理
+    task_key: str, # 新增: 用於決定 file_type
+    task_queue: Optional[multiprocessing.Queue] = None, # 修改類型提示
     semaphore: Optional[asyncio.Semaphore] = None
 ) -> Dict[str, Any]:
     """
@@ -104,17 +107,27 @@ async def download_single_file_async(
 
     if status_str == 'success' and task_queue is not None:
         try:
-            # 注意: multiprocessing.Queue 在不同進程的 asyncio 事件循環中直接使用 put_nowait 可能會有問題
-            # 協調器階段需要仔細考慮如何從 asyncio 迴圈安全地放入 multiprocessing.Queue
-            # 一個常見模式是 asyncio 迴圈將結果放入 asyncio.Queue, 然後由一個同步線程/進程從 asyncio.Queue 取出再放入 multiprocessing.Queue
-            # 或者，如果 downloader 和 pipeline 在同一進程但不同線程/協程，可以使用 asyncio.Queue
-            # 此處暫時示意，實際放入佇列的邏輯可能需要在協調器中包裝
-            task_queue.put_nowait({'type': 'file', 'path': local_file_path, 'source_url': url})
+            # 依照計畫書 v18.0 要求，修改入列資料結構
+            # file_type 使用 task_key (例如 'futures_trades')
+            item_to_queue = {
+                "file_path": local_file_path,
+                "file_type": task_key
+            }
+            # 使用 task_queue.put()。注意：這是一個阻塞操作。
+            # 在 asyncio 事件迴圈中直接呼叫阻塞操作通常不建議。
+            # 理想情況下，應使用 asyncio.to_thread (Python 3.9+) 或類似機制。
+            # task_queue.put(item_to_queue, block=False) # 或者使用 put_nowait，但需要處理 queue.Full
+            # 根據計畫書指引，先使用 .put()，假設協調器能處理。
+            # 如果協調器期望非阻塞，則應使用 put_nowait 並處理 queue.Full。
+            task_queue.put(item_to_queue)
+            # print(f"成功將 {item_to_queue} 加入任務佇列。") # 調試日誌
+        except queue.Full:
+            result['queue_error'] = "任務佇列已滿 (queue.Full)，無法加入。"
+            print(f"錯誤: 任務佇列已滿，無法將 {local_file_path} (類型: {task_key}) 加入。", file=sys.stderr)
         except Exception as e_queue:
             # 如果放入佇列失敗，記錄錯誤，但不影響下載本身的狀態
             result['queue_error'] = f"放入任務佇列失敗: {e_queue}"
-            print(f"錯誤: 無法將 {local_file_path} 放入任務佇列: {e_queue}", file=sys.stderr)
-
+            print(f"錯誤: 無法將 {local_file_path} (類型: {task_key}) 放入任務佇列: {e_queue}", file=sys.stderr)
 
     if semaphore:
         semaphore.release()
@@ -124,21 +137,34 @@ async def download_single_file_async(
 
 
 async def download_data_async(
-    start_date_dt: datetime,
-    end_date_dt: datetime,
-    local_output_base_path: str,
-    data_types_to_download: dict, # 使用者選擇的數據類型 (布林字典)
-    task_queue: Optional[Any] = None, # 傳給 download_single_file_async
-    max_concurrent_downloads: int = 10, # 並行下載限制
-    sleep_time_between_batches: float = 0.1 # 批次間的短暫延遲
+    start_date: str, # 修改：依照計畫書，從 datetime 改為 str
+    end_date: str,   # 修改：依照計畫書，從 datetime 改為 str
+    data_types_to_download: dict, # 注意：計畫書範例為 list, 但此處保留 dict 以維持與 TASKS_CONFIG 的一致性及現有邏輯的兼容性。協調器需傳遞 dict。
+    output_path: str, # 修改：依照計畫書，改名 local_output_base_path
+    task_queue: multiprocessing.Queue, # 修改：依照計畫書，明確類型
+    max_concurrent_downloads: int = 10, # 並行下載限制 (保留預設值)
+    sleep_time_between_batches: float = 0.1 # 批次間的短暫延遲 (保留預設值)
 ):
     """
     主非同步下載程序。
     """
+    # 將日期字串轉換為 datetime 物件
+    try:
+        start_date_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        end_date_dt = datetime.strptime(end_date, '%Y-%m-%d')
+    except ValueError:
+        print("❌ 錯誤：download_data_async 收到的日期格式不正確，應為 'YYYY-MM-DD'。", file=sys.stderr)
+        # 可以考慮拋出例外或返回錯誤狀態
+        return [] # 或其他錯誤指示
+
+    if end_date_dt < start_date_dt:
+        print("❌ 錯誤：download_data_async 收到的結束日期早於開始日期。", file=sys.stderr)
+        return []
+
     print("======================================================")
-    print("      🚀 TAIFEX 非同步數據下載引擎啟動中...         ")
+    print("      🚀 TAIFEX 非同步數據下載引擎啟動中... (v18.0 相容模式)         ")
     print("======================================================\n")
-    print(f"🗂️ 所有下載的檔案將會儲存在以下本地路徑：\n➡️ {os.path.abspath(local_output_base_path)}\n")
+    print(f"🗂️ 所有下載的檔案將會儲存在以下本地路徑：\n➡️ {os.path.abspath(output_path)}\n")
 
     date_range = [start_date_dt + timedelta(days=x) for x in range((end_date_dt - start_date_dt).days + 1)]
 
@@ -160,8 +186,9 @@ async def download_data_async(
                 config = TASKS_CONFIG[task_key]
                 url = config['url_template'].format(date_str_for_url)
                 file_name = os.path.basename(url)
-                folder_path = os.path.join(local_output_base_path, config['folder'])
-                download_tasks_to_create.append({'url': url, 'folder_path': folder_path, 'file_name': file_name})
+                folder_path = os.path.join(output_path, config['folder']) # 使用 output_path
+                # 將 task_key 加入到任務參數中，以便 download_single_file_async 知道 file_type
+                download_tasks_to_create.append({'url': url, 'folder_path': folder_path, 'file_name': file_name, 'task_key': task_key})
 
     if not download_tasks_to_create:
         print("ℹ️ 沒有有效的下載任務被建立。請檢查日期範圍和選擇的數據類型。")
@@ -175,8 +202,16 @@ async def download_data_async(
     async with aiohttp.ClientSession(headers=headers) as session:
         tasks_for_gather = []
         for task_params in download_tasks_to_create:
-            # 將 task_queue 傳遞給 download_single_file_async
-            coro = download_single_file_async(session, task_params['url'], task_params['folder_path'], task_params['file_name'], task_queue, semaphore)
+            # 將 task_queue 和 task_key 傳遞給 download_single_file_async
+            coro = download_single_file_async(
+                session,
+                task_params['url'],
+                task_params['folder_path'],
+                task_params['file_name'],
+                task_params['task_key'], # 傳入 task_key
+                task_queue,
+                semaphore
+            )
             tasks_for_gather.append(coro)
 
         # 使用 tqdm 包裝 asyncio.gather 以顯示進度
@@ -222,21 +257,26 @@ async def download_data_async(
 
     for r in all_results:
         if r['status'] not in ['success', 'exists']:
-            print(f"  - {r['file_name']}: {r['status']} ({r.get('error', '無額外錯誤訊息')})")
-        if 'queue_error' in r:
-             print(f"  - {r['file_name']}: 佇列錯誤 - {r['queue_error']}")
+            log_msg = f"  - {r.get('file_name', '未知檔案')}: {r['status']}"
+            if r.get('error'):
+                log_msg += f" ({r['error']})"
+            print(log_msg)
+        if 'queue_error' in r: # 檢查是否有佇列錯誤並打印
+             print(f"  - {r.get('file_name', '未知檔案')}: 佇列錯誤 - {r['queue_error']}")
 
 
-    print(f"\n所有檔案嘗試儲存至您的指定本地路徑：\n➡️ **{os.path.abspath(local_output_base_path)}**")
+    print(f"\n所有檔案嘗試儲存至您的指定本地路徑：\n➡️ **{os.path.abspath(output_path)}**") # 使用 output_path
     return all_results
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TAIFEX 非同步數據採集官：從期交所官方網站批量下載指定日期範圍的原始數據至本地。")
+    # 此 main 函式主要用於獨立測試。在 v18.0 架構下，download_data_async 將由協調器作為模組導入並調用。
+    # 因此，此處的 asyncio.run(...) 將被註解掉或移除。
+    parser = argparse.ArgumentParser(description="TAIFEX 非同步數據採集官 (v18.0 支援模組)：從期交所官方網站批量下載指定日期範圍的原始數據至本地。")
 
     parser.add_argument("--start-date", required=True, help="下載開始日期 (格式: YYYY-MM-DD)。")
     parser.add_argument("--end-date", required=True, help="下載結束日期 (格式: YYYY-MM-DD)。")
-    parser.add_argument("--output-path", required=True, help="下載檔案的本地儲存根目錄。")
+    parser.add_argument("--output-path", required=True, help="下載檔案的本地儲存根目錄。") # 參數名與 download_data_async 一致
     parser.add_argument("--max-concurrent", type=int, default=10, help="最大並行下載數 (預設: 10)。")
     parser.add_argument("--sleep-batch", type=float, default=0.05, help="每個下載任務完成後的小延遲 (預設: 0.05s)。")
 
@@ -269,18 +309,29 @@ def main():
         print("ℹ️ 提示：未選擇任何數據類型進行下載。若要下載，請至少指定一個數據類型參數 (例如 --futures-trades)。", file=sys.stderr)
         sys.exit(0)
 
-    # 為了獨立測試 downloader，這裡的 task_queue 暫時設為 None
-    # 在協調器中，這個佇列會被傳入
-    # asyncio.run() 是 Python 3.7+ 的標準方式來執行一個協程
-    asyncio.run(download_data_async(
-        start_dt,
-        end_dt,
-        args.output_path,
-        selected_data_types_dict,
-        task_queue=None, # 獨立執行時，不使用佇列
-        max_concurrent_downloads=args.max_concurrent,
-        sleep_time_between_batches=args.sleep_batch
-    ))
+    # 為了獨立測試 downloader，這裡的 task_queue 暫時設為 None 或一個模擬的 Queue
+    # 在 v18.0 協調器中，此 main 函式不會被執行，download_data_async 會被直接調用。
+    # 因此，以下 asyncio.run(...) 部分將被註解。
+
+    # print("警告：此 main() 函式僅供獨立測試 downloader。在 v18.0 整合模式下不會執行。")
+    # print("若要測試，請確保提供所有必要參數。task_queue 將為 None。")
+
+    # # 模擬的 task_queue (可選，用於測試佇列功能)
+    # # from multiprocessing import Manager
+    # # manager = Manager()
+    # # test_q = manager.Queue()
+
+    # asyncio.run(download_data_async(
+    #     start_date=args.start_date, # 傳遞字串
+    #     end_date=args.end_date,     # 傳遞字串
+    #     output_path=args.output_path,
+    #     data_types_to_download=selected_data_types_dict,
+    #     task_queue=None, # 在獨立測試中設為 None 或使用 test_q
+    #     max_concurrent_downloads=args.max_concurrent,
+    #     sleep_time_between_batches=args.sleep_batch
+    # ))
+    # sys.exit(0)
+    print("程式進入點 (main) 已被v18.0架構取代。請透過協調器呼叫 `download_data_async`。")
     sys.exit(0)
 
 if __name__ == "__main__":
