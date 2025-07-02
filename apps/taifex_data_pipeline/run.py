@@ -199,10 +199,32 @@ def pipeline_daily_ohlc(df: pd.DataFrame, source: str) -> pd.DataFrame:
     df['trading_date'] = pd.to_datetime(df['trading_date'], errors='coerce').dt.strftime('%Y-%m-%d')
     if 'option_type' in df.columns: df['option_type'] = df['option_type'].astype(str).str.strip().map({'買權':'C','賣權':'P','C':'C','P':'P'})
     df['trading_session'] = df.get('trading_session', pd.Series(index=df.index, dtype='str')).fillna('Regular').astype(str).str.strip().replace({'盤後':'AfterHours','一般':'Regular','0':'Regular','1':'AfterHours'})
-    num_cols = ['open','high','low','close','volume','settlement_price','open_interest','strike_price','change','change_percent']
+
+    # 擴展數值欄位列表，確保所有潛在的數值欄位都被包含和正確處理
+    # 原始列表：['open','high','low','close','volume','settlement_price','open_interest','strike_price','change','change_percent']
+    # 'last_best_bid_price', 'last_best_ask_price', 'historical_high', 'historical_low' 也可能是數值
+    # 'spread_volume' 也是一個可能的數值欄位
+    num_cols = [
+        'open', 'high', 'low', 'close', 'volume', 'settlement_price',
+        'open_interest', 'strike_price', 'change', 'change_percent',
+        'last_best_bid_price', 'last_best_ask_price',
+        'historical_high', 'historical_low', 'spread_volume'
+    ]
+
     for col in num_cols:
-        if col in df.columns: df[col] = pd.to_numeric(df[col].astype(str).str.replace(',','').replace('-','NaN'), errors='coerce')
-    df['source'] = source; return df.dropna(subset=['trading_date','product_id','close'])
+        if col in df.columns:
+            # 先將原始值中的 '-' 替換為空字串或 NaN，pd.to_numeric 可以處理空字串為 NaN
+            # 並移除千分位符號 ','
+            # astype(str) 確保在替換前是字串類型，避免對非字串類型如純數字或布林值進行 .str 操作
+            df[col] = df[col].astype(str).str.replace(',', '', regex=False).str.replace('-', '', regex=False)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        # else:
+            # 如果欄位不存在，可以選擇性地創建它並賦值 NaN，但 _clean_and_prepare_df 可能已處理
+            # df[col] = pd.NA # 或者 np.nan
+
+    df['source'] = source
+    # 保持原有的 dropna 邏輯，確保核心識別欄位存在
+    return df.dropna(subset=['trading_date','product_id','close'])
 
 def pipeline_tick_data(df: pd.DataFrame, source: str) -> pd.DataFrame:
     # Hotfix applied for "成交數量(B+S)"
@@ -272,8 +294,15 @@ def pipeline_pcr(df: pd.DataFrame, source: str) -> pd.DataFrame:
 PIPELINE_MAP = {"daily_ohlc":pipeline_daily_ohlc,"institutional_investors":pipeline_institutional_investors,"tick_data":pipeline_tick_data,"fx_rates":pipeline_fx_rates,"pcr":pipeline_pcr,"unknown":lambda df,src: df}
 
 def worker_process_file(args: Tuple[str, bytes, Dict, str, Any]) -> Dict[str, Any]:
+    # 臨時加入，用於測試錯誤傳遞機制
+    # raise Exception("Simulated worker error to test exit code")
     desc, bytes_data, recipe, staging_path, hw_mgr = args
     try:
+        # 測試強化錯誤傳遞機制的第二種情況：讓一個 worker process 返回錯誤狀態
+        # if "futures_daily_sample.csv" in desc: # 特定針對一個檔案使其失敗
+        #     logger.warning(f"開發者注入錯誤：模擬 {desc} 處理失敗以測試主程序錯誤出口。")
+        #     return {'status':'error','descriptor':desc,'error_msg':"模擬的 worker 錯誤"}
+
         df = parse_with_recipe(bytes_data, recipe, desc)
         if df is None or df.empty: return {'status':'skipped_parse_empty','descriptor':desc}
         p_name = recipe.get("pipeline","unknown"); p_func = PIPELINE_MAP.get(p_name)
@@ -342,6 +371,12 @@ def run_parsing_stage(input_dir:str, staging_dir:str, format_map_path:str, hw_mg
             with open(format_map_path,'w',encoding='utf-8') as f: json.dump(f_map,f,indent=4,ensure_ascii=False)
             logger.info(f"Format map saved to {format_map_path}")
         except Exception as e: logger.error(f"Failed to save format map: {e}")
+
+    # 強化錯誤傳遞：如果解析階段出現任何錯誤，腳本應以失敗狀態退出
+    if stats['e'] > 0:
+        logger.error(f"解析階段出現 {stats['e']} 個錯誤。程序將以失敗狀態退出。")
+        sys.exit(1) # 以非零錯誤碼退出
+
     return map_updated, stats['r'], stats['s'], stats['e'], sum(stats[k] for k in ['spe','snp','sce'])
 
 def run_duckdb_loading_stage(db_path:str, staging_dir:str, hw_mgr:HardwareManager, db_tmp_dir:str) -> int:
