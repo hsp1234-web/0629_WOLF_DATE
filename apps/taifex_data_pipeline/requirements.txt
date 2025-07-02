@@ -1,0 +1,7 @@
+# Placeholder for taifex_data_pipeline requirements.txt
+pandas
+psutil
+pyarrow
+duckdb
+pytz
+openpyxl

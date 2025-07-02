@@ -1,0 +1,2 @@
+# Placeholder for taifex_data_prospector requirements.txt
+pytz

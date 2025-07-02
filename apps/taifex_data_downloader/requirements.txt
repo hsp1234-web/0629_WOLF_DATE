@@ -1,0 +1,3 @@
+# Placeholder for taifex_data_downloader requirements.txt
+requests
+tqdm
