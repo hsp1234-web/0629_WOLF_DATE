@@ -1,3 +1,2 @@
-# Placeholder for taifex_data_downloader requirements.txt
-requests
-tqdm
+# Requirements for taifex_data_downloader (v20.1 async streaming)
+aiohttp
