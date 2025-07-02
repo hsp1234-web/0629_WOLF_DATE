@@ -16,24 +16,74 @@ import os
 import sys
 import aiohttp # 新增導入 for get_stream_directly_from_url
 
-# --- 自給自足的下載器 ---
-async def get_stream_directly_from_url(url: str, chunk_size: int = 8192) -> AsyncGenerator[bytes, None]:
+# --- 自給自足的下載器與HTML解析器 ---
+async def get_stream_with_content_type(session: aiohttp.ClientSession, url: str) -> Tuple[aiohttp.ClientResponse, str]:
     """
-    一個內嵌於測試腳本的、自足的下載器。
-    它直接從 URL 下載數據，並以 AsyncGenerator[bytes, None] 的形式產生數據塊。
+    使用提供的 session 下載數據並返回 ClientResponse 和 Content-Type。
+    調用者負責管理 session 的生命週期。
+    ClientResponse 也應由調用者在使用完畢後釋放。
     """
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            while True:
-                chunk = await response.content.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
+    # print(f"DEBUG: get_stream_with_content_type called for URL: {url}") # DEBUG
+    response = await session.get(url)
+    # print(f"DEBUG: Response status: {response.status} for URL: {url}") # DEBUG
+    response.raise_for_status() # 如果狀態碼不是 2xx，則拋出異常
+    content_type = response.headers.get('Content-Type', '').lower()
+    # print(f"DEBUG: Content-Type: {content_type} for URL: {url}") # DEBUG
+    return response, content_type
 
-#不再需要 aiohttp_stream_reader_to_async_generator
-# async def aiohttp_stream_reader_to_async_generator(stream_reader: aiohttp.StreamReader, chunk_size: int = 8192) -> AsyncGenerator[bytes, None]:
-#     """將 aiohttp.StreamReader 適配為 AsyncGenerator[bytes, None]。"""
+
+async def parse_csv_from_html(response: aiohttp.ClientResponse) -> AsyncGenerator[bytes, None]:
+    """
+    從 HTML 內容 (aiohttp.ClientResponse) 中提取 <pre> 標籤內的 CSV 數據，
+    並將其作為 AsyncGenerator[bytes, None] 返回。
+    """
+    extracted_csv_text = "" # 用於調試
+    try:
+        html_text = await response.text(encoding='utf-8', errors='replace')
+        logger.debug(f"HTML 解析器：接收到的 HTML (前 500 字元): {html_text[:500]}...") # 打印 HTML 頭部
+
+        # 簡單的 <pre> 提取
+        pre_start_tag = '<pre>'
+        pre_end_tag = '</pre>'
+
+        start_idx_find = html_text.find(pre_start_tag)
+        if start_idx_find != -1:
+            start_index = start_idx_find + len(pre_start_tag)
+            end_index = html_text.find(pre_end_tag, start_index)
+            if end_index != -1:
+                extracted_csv_text = html_text[start_index:end_index].strip()
+                logger.debug(f"HTML 解析器：從 <pre> 提取的 CSV 文本 (前 300 字元): {extracted_csv_text[:300]}...")
+                if extracted_csv_text:
+                    # 假設提取的 CSV 內容是 MS950 編碼兼容的，或者期交所<pre>輸出就是BIG5/MS950
+                    csv_bytes = extracted_csv_text.encode('ms950', errors='replace')
+                    logger.debug(f"HTML 解析器：CSV 文本編碼為 MS950 bytes，長度: {len(csv_bytes)}")
+                    chunk_size = 8192
+                    for i in range(0, len(csv_bytes), chunk_size):
+                        yield csv_bytes[i:i+chunk_size]
+                    # yield 完成後，產生器自然結束
+                else:
+                    logger.warning("HTML 解析器：從 <pre> 標籤提取的 CSV 文本為空。")
+            else:
+                logger.warning("HTML 解析器：找到了 <pre> 開始標籤，但未找到結束標籤。")
+        else:
+            logger.warning("HTML 解析器：未在 HTML 中找到 <pre> 開始標籤。")
+
+        # 如果沒有 yield 任何數據 (例如 extracted_csv_text 為空或未找到標籤)，
+        # 這個產生器將不產生任何值就結束，AsyncBytesGeneratorReader 會正確處理為 EOF。
+        # 不需要額外的 if False: yield b""
+
+    except Exception as e:
+        logger.error(f"從 HTML 解析 CSV 時出錯: {e}")
+        # 讓異常傳播，或者也可以選擇 yield b'' 來表示空流
+    finally:
+        if response and not response.closed:
+             response.release()
+
+# async def get_stream_directly_from_url(url: str, chunk_size: int = 8192) -> AsyncGenerator[bytes, None]:
+#     """
+#     一個內嵌於測試腳本的、自足的下載器。
+#     它直接從 URL 下載數據，並以 AsyncGenerator[bytes, None] 的形式產生數據塊。
+#     """
 #     try:
 #         while True:
 #             chunk = await stream_reader.read(chunk_size)
@@ -98,45 +148,81 @@ class TestTaifexPipelineIntegration(unittest.IsolatedAsyncioTestCase):
         except Exception as e:
             self.fail(f"從 URL {self.TARGET_URL} 提取日期用於驗證時失敗: {e}")
 
-        async_gen_zip_stream: Optional[AsyncGenerator[bytes, None]] = None
+        input_stream_to_process: Optional[AsyncGenerator[bytes, None]] = None
         dl_filename = self.TARGET_URL.split('/')[-1] # 用於日誌記錄
+        response_obj: Optional[aiohttp.ClientResponse] = None
+        unzipper: Optional[InMemoryStreamUnzipper] = None # 初始化 unzipper
 
-        try:
-            logger.info(f"測試：直接調用 get_stream_directly_from_url('{self.TARGET_URL}') 以獲取 AsyncGenerator...")
-            async_gen_zip_stream = get_stream_directly_from_url(self.TARGET_URL) # 現在直接返回 AsyncGenerator
-            self.assertIsNotNone(async_gen_zip_stream, f"get_stream_directly_from_url 未能獲取到 AsyncGenerator for {self.TARGET_URL}")
-        except aiohttp.ClientResponseError as e_http: # 更具體的 HTTP 錯誤捕獲
-            self.fail(f"直接從 URL {self.TARGET_URL} 下載時發生 HTTP 錯誤: {e_http.status} {e_http.message}")
-            return # 確保後續代碼不執行
-        except Exception as e_download: # 其他下載時的錯誤
-            self.fail(f"直接從 URL {self.TARGET_URL} 下載時發生未知錯誤: {e_download}")
-            return # 確保後續代碼不執行
+        async with aiohttp.ClientSession() as session:
+            try:
+                logger.info(f"測試：調用 get_stream_with_content_type('{self.TARGET_URL}')...")
+                # get_stream_with_content_type 現在返回整個 response 和 content_type
+                response_obj, content_type = await get_stream_with_content_type(session, self.TARGET_URL)
 
-        if not async_gen_zip_stream: # 再次檢查
-            self.fail("async_gen_zip_stream is None after direct download attempt.")
-            return
+                self.assertIsNotNone(response_obj.content, f"get_stream_with_content_type 未能獲取到 StreamReader for {self.TARGET_URL}")
+                logger.info(f"整合測試：從 URL 獲取到數據流，Content-Type: '{content_type}'")
 
-        logger.info(f"整合測試：成功直接從 URL 獲取到 {dl_filename} 的 AsyncGenerator。")
+                if 'application/zip' in content_type:
+                    logger.info("偵測到 ZIP 檔案，準備 InMemoryStreamUnzipper...")
 
-        unzipper = InMemoryStreamUnzipper(async_gen_zip_stream)
-        uncompressed_byte_stream_gen: Optional[AsyncGenerator[bytes, None]] = None
+                    async def zip_stream_adapter_gen() -> AsyncGenerator[bytes, None]:
+                        """將 response.content (StreamReader) 適配為 AsyncGenerator[bytes, None]"""
+                        try:
+                            while True:
+                                chunk = await response_obj.content.read(8192) # 使用 response_obj
+                                if not chunk: break
+                                yield chunk
+                        finally:
+                            if response_obj and not response_obj.closed:
+                                response_obj.release() # 確保 response 在 stream 被消耗後釋放
+
+                    unzipper = InMemoryStreamUnzipper(zip_stream_adapter_gen())
+                    input_stream_to_process = await unzipper.get_uncompressed_stream()
+
+                elif 'text/html' in content_type:
+                    logger.info("偵測到 HTML 內容，啟動 HTML 解析器...")
+                    # parse_csv_from_html 應接收 response_obj 以便在其內部釋放
+                    input_stream_to_process = parse_csv_from_html(response_obj)
+                else:
+                    # 未知類型，確保釋放 response
+                    if response_obj and not response_obj.closed: await response_obj.release()
+                    self.fail(f"未知的內容類型: {content_type} 從 URL: {self.TARGET_URL}")
+                    return
+
+                self.assertIsNotNone(input_stream_to_process, "未能從下載內容中準備好用於處理的數據流。")
+
+            except aiohttp.ClientResponseError as e_http:
+                if response_obj and not response_obj.closed: await response_obj.release()
+                self.fail(f"直接從 URL {self.TARGET_URL} 下載時發生 HTTP 錯誤: {e_http.status} {e_http.message}")
+                return
+            except Exception as e_download:
+                if response_obj and not response_obj.closed: await response_obj.release()
+                self.fail(f"直接從 URL {self.TARGET_URL} 下載或初步處理時發生未知錯誤: {e_download}")
+                return
+
+        # session 的 async with 塊結束於此，response_obj 如果未被上述邏輯釋放，則可能會有問題
+        # 但由於 response_obj 的釋放已整合到 zip_stream_adapter_gen 和 parse_csv_from_html 的 finally 中，
+        # 或在錯誤/未知類型分支中明確調用，理論上應已處理。
+
+        uncompressed_byte_stream_gen = input_stream_to_process # uncompressed_byte_stream_gen 現在是最終要處理的流
 
         printed_lines: List[str] = []
         header_line_content = ""
         data_rows_for_date_check: List[List[str]] = []
 
-        try:
-            uncompressed_byte_stream_gen = await unzipper.get_uncompressed_stream()
+        # 現在 uncompressed_byte_stream_gen 已經是處理好的流 (來自ZIP解壓或HTML解析)
+        # 直接用它來創建 AsyncBytesGeneratorReader
+        # 移除之前針對 ZIP 路徑的 unzipper.get_uncompressed_stream() 調用和相關 assert
 
-            self.assertIsNotNone(uncompressed_byte_stream_gen,
-                                 f"InMemoryStreamUnzipper.get_uncompressed_stream() 不應返回 None for {dl_filename}")
-            if not uncompressed_byte_stream_gen: # Type guard
-                self.fail("uncompressed_byte_stream_gen is None, 無法繼續")
+        try:
+            # self.assertIsNotNone(uncompressed_byte_stream_gen, # 這個斷言已在前面處理 input_stream_to_process 時完成
+            #                      f"Data stream for processing should not be None for {dl_filename}")
+            if not uncompressed_byte_stream_gen: # Type guard, 應該不會觸發，因為前面有 assert
+                self.fail("uncompressed_byte_stream_gen is None before creating AsyncBytesGeneratorReader, this should not happen.")
                 return
 
-            logger.info(f"整合測試：成功從 unzipper 獲取到解壓縮後的位元組流生成器。")
-
-            member_descriptor = f"{dl_filename} (Direct Download) -> member_0" # 更新描述符
+            # dl_filename 已在外部定義
+            member_descriptor = f"{dl_filename} (Processed Stream) -> member_0"
             adapted_stream = AsyncBytesGeneratorReader(uncompressed_byte_stream_gen, member_descriptor)
             logger.info(f"整合測試：已將解壓縮流包裝到 AsyncBytesGeneratorReader ({member_descriptor})。")
             logger.info(f"整合測試：開始從解壓縮流 ({member_descriptor}) 讀取並打印前幾行...")
