@@ -432,11 +432,14 @@ def pipeline_tick_data(df: pd.DataFrame, source_descriptor: str) -> pd.DataFrame
         '到期月份_週別': 'expiry_month', '履約價': 'strike_price',
         '買賣權': 'option_type', '成交時間': 'trade_time',
         '成交價格': 'price',
-        '成交數量_買賣別_': 'volume_with_side', # 假設這是 "成交數量(B/S)" 這類欄位
-        '成交數量_b_or_s_': 'volume_with_side',
-        '成交數量': 'volume' # 如果直接有成交數量
+        '成交數量_買賣別_': 'volume_with_side', # 舊的 "成交數量(B/S)" (帶括號)
+        '成交數量_b_or_s_': 'volume_with_side', # 另一種可能的 "成交數量(B/S)" (無括號但有底線)
+        '成交數量_b+s_': 'volume', # 新增：對應真實數據 "成交數量(B+S)" -> "成交數量_b+s_" (由 _clean_and_prepare_df 轉換)
+        '成交數量': 'volume' # 如果直接有 "成交數量" 欄位
     }
-    df_clean = _clean_and_prepare_df(df, ['trade_date', 'trade_time', 'price'], rename_map)
+    # 確保 'volume' 是 pipeline_tick_data 的核心欄位之一，即使它可能來自不同原始名稱
+    df_clean = _clean_and_prepare_df(df, ['trade_date', 'trade_time', 'price', 'volume'], rename_map)
+
 
     # 合併日期和時間
     # 時間格式可能是 HH:MM:SS 或 HH:MM:SS.ffffff
@@ -608,7 +611,7 @@ def worker_process_file(args_tuple: Tuple[str, bytes, Dict, str, Any]) -> Dict[s
         return {'status': 'success', 'rows_processed': len(cleaned_df), 'pipeline': pipeline_name, 'descriptor': descriptor, 'staged_file': staging_file_path}
 
     except Exception as e:
-        logger.error(f"工人處理檔案 {descriptor} 時發生嚴重錯誤: {e}", exc_info=True) # exc_info=True 會記錄 traceback
+        logger.error(f"工人處理檔案 {descriptor} 時發生嚴重錯誤: {e}") # 移除 exc_info=True
         return {'status': 'error', 'message': f"{type(e).__name__}: {e}", 'descriptor': descriptor}
     finally:
         if hw_manager_ref: # 檢查是否存在 (雖然應該總是存在)
@@ -709,7 +712,7 @@ def run_parsing_stage(input_dir: str, staging_dir: str, format_map_path: str, hw
 
             except Exception as exc: # Future 本身可能拋出例外 (例如 worker process 崩潰)
                 stats['error'] += 1
-                logger.error(f"處理任務 '{job_descriptor}' 時，Future 產生嚴重例外: {exc}", exc_info=True)
+                logger.error(f"處理任務 '{job_descriptor}' 時，Future 產生嚴重例外: {exc}") # 移除 exc_info=True
 
     logger.success(f"階段一所有檔案處理完畢。")
     total_skipped = stats['skipped_empty_or_parse_fail'] + stats['skipped_no_pipeline'] + stats['skipped_empty_after_clean']
@@ -932,7 +935,7 @@ def run_duckdb_loading_stage(db_file_path: str, staging_dir: str, hw_manager: Ha
 
 
         except Exception as e_load_table:
-            logger.error(f"  ↳ 載入資料至 '{table_name}' 時發生嚴重錯誤: {e_load_table}", exc_info=True)
+            logger.error(f"  ↳ 載入資料至 '{table_name}' 時發生嚴重錯誤: {e_load_table}") # 移除 exc_info=True
 
     conn.close()
     logger.success(f"資料庫操作完成並已關閉連線。總共嘗試加入約 {total_rows_added_to_db:,} 筆唯一記錄至各表格。")
@@ -1031,7 +1034,7 @@ def main():
         # os.makedirs(local_staging_path, exist_ok=True) # 重新建立空目錄
 
     except Exception as e_main:
-        logger.error(f"主流程發生未預期的嚴重錯誤: {e_main}", exc_info=True)
+        logger.error(f"主流程發生未預期的嚴重錯誤: {e_main}") # 移除 exc_info=True
     finally:
         end_time_total = time.time()
         total_duration_seconds = end_time_total - start_time_total
