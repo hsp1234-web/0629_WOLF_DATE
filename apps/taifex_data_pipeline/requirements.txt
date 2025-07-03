@@ -1,8 +1,4 @@
-# Requirements for taifex_data_pipeline (v20.2 async streaming)
 pandas
-psutil
 pyarrow
 duckdb
-pytz
-openpyxl
-# aiozip is no longer used, standard zipfile is used with in-memory BytesIO.
+tqdm

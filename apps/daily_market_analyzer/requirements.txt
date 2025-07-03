@@ -1,3 +1,6 @@
-yfinance
 pandas
+yfinance
+pytz
+psutil
+tqdm
 duckdb
